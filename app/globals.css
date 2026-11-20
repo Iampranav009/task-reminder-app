@@ -220,8 +220,17 @@ body.ultron-mode .pill.high { background: rgba(255, 106, 26, 0.20); border-color
   display: flex; flex-direction: column; overflow: hidden;
   padding: calc(env(safe-area-inset-top) + 12px) 16px calc(env(safe-area-inset-bottom) + 16px);
 }
-.ultron-chat { flex: 1; overflow-y: auto; margin-top: 12px; min-height: 0; }
-.ultron-inputbar { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
+.ultron-chat { flex: 1; overflow-y: auto; margin-top: 12px; min-height: 0; scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.30) transparent; }
+.ultron-chat::-webkit-scrollbar { width: 6px; }
+.ultron-chat::-webkit-scrollbar-track { background: transparent; }
+.ultron-chat::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.30); border-radius: 999px; }
+.ultron-inputbar { display: flex; gap: 10px; align-items: flex-end; margin-top: 12px; }
 .ultron-inputbar .field { flex: 1; margin: 0; min-width: 0; }
+.ultron-input { resize: none; overflow-y: auto; line-height: 24px; max-height: 120px; }
+
+/* Home actions — two equal, balanced buttons (Add task + Listen).
+   The old row had a third Reminders button and uneven sizes. */
+.home-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+.home-actions .btn { width: 100%; }
 .ultron-send { background: #0a84ff; color: #fff; box-shadow: 0 6px 20px rgba(10, 132, 255, 0.45); flex-shrink: 0; }
 body.ultron-mode .btn.ultron-send { background: #0a84ff; color: #fff; box-shadow: 0 6px 20px rgba(10, 132, 255, 0.45); }

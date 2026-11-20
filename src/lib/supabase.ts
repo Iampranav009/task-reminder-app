@@ -3,8 +3,9 @@
  *
  * Data lives in Supabase (Postgres) when the app is configured with
  * NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.
- * When those env vars are missing, the app falls back to localStorage
- * only, so it still works offline and the build never crashes.
+ * When those env vars are missing, the app does NOT fall back to
+ * local storage — it shows "Supabase not connected" and keeps data
+ * in memory only for that session (user decision, 20 Nov 2026).
  *
  * No real URL or key is stored in this repo — placeholders only.
  * See README.md ("Data: Supabase") for setup.
@@ -65,10 +66,14 @@ export async function loadFromSupabase(): Promise<Partial<AppData> | null> {
       sb.from('app_settings').select('*').eq('id', 1).maybeSingle(),
     ]);
     if (projects.error || tasks.error || reminders.error) return null;
-    const out: Partial<AppData> = {};
-    if (projects.data?.length) out.projects = (projects.data as ProjectRow[]).map(toProject);
-    if (tasks.data?.length) out.tasks = (tasks.data as TaskRow[]).map(toTask);
-    if (reminders.data) out.ultronReminders = (reminders.data as ReminderRow[]).map(toReminder);
+    // Supabase is the source of truth: return the real rows, even when
+    // a table is empty ([]), so the app never falls back to seed/demo
+    // data when the cloud is empty.
+    const out: Partial<AppData> = {
+      projects: (projects.data as ProjectRow[]).map(toProject),
+      tasks: (tasks.data as TaskRow[]).map(toTask),
+      ultronReminders: (reminders.data as ReminderRow[]).map(toReminder),
+    };
     if (!settings.error && settings.data) {
       if (settings.data.settings) out.settings = settings.data.settings as AppData['settings'];
       if (settings.data.profile) out.profile = settings.data.profile as AppData['profile'];

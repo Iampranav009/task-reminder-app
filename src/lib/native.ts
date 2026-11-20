@@ -9,9 +9,12 @@
  * - Scheduled system notifications via @capacitor/local-notifications.
  *   These are delivered by Android's AlarmManager even when the app is
  *   closed, which a PWA cannot guarantee.
- * - Voice still uses the phone's free Web Speech API (speechSynthesis,
- *   en-IN / hi-IN / mr-IN) inside the Android WebView. Android does not
- *   let a WebView app speak out loud from a fully closed/killed state
+ * - Voice still uses the phone's free speech engines: voice capture
+ *   uses Web Speech Recognition in the WebView, and speaking uses
+ *   Android's own TTS engine via @capacitor-community/text-to-speech
+ *   (see speakAloud below) — the Web Speech API does not work
+ *   reliably inside an Android WebView. Android does not let a
+ *   WebView app speak out loud from a fully closed/killed state
  *   without a foreground service, so a scheduled notification speaks when
  *   the app is opened (or when the user taps the notification and the
  *   app opens). The notification itself is reliable; the voice plays
@@ -183,7 +186,80 @@ export async function scheduleNativeReminder(r: NativeReminder): Promise<boolean
   }
 }
 
-/** Replace all device-scheduled reminders with the given list. */
+/* ---------- Speech (Listen + Ultron voice) ----------
+ *
+ * Problem: the Web Speech API does not work reliably inside an
+ * Android WebView — speechSynthesis exists, but getVoices() is often
+ * empty at first and some devices have no WebView voice at all, so
+ * Listen used to show "Speech is not available on this device."
+ * Fix: on the native app, speak through Android's own TTS engine via
+ * @capacitor-community/text-to-speech (v8, Capacitor 8, auto-
+ * registered — no MainActivity change needed). It bypasses the
+ * WebView entirely. Web Speech (with async voice loading, see
+ * speakWebAsync in core.ts) is only the fallback on the web build.
+ * Returns false only when NO engine could speak, so the UI never
+ * claims "not available" while a usable voice exists. */
+import type { VoiceLang } from './core';
+
+async function getNativeTts() {
+  if (!isNativeApp()) return null;
+  try {
+    const mod = await import('@capacitor-community/text-to-speech');
+    return { tts: mod.TextToSpeech, QueueStrategy: mod.QueueStrategy };
+  } catch {
+    return null;
+  }
+}
+
+/** Speak text aloud in the chosen language. Native Android TTS first, Web Speech fallback. */
+export async function speakAloud(text: string, lang: VoiceLang): Promise<boolean> {
+  const clean = text.trim();
+  if (!clean) return false;
+  const native = await getNativeTts();
+  if (native) {
+    const { tts, QueueStrategy } = native;
+    try {
+      // Prefer the exact language (en-IN / hi-IN / mr-IN); fall back
+      // to the base language, then to the device default.
+      let useLang = lang;
+      try {
+        const sup = await tts.isLanguageSupported({ lang });
+        if (!sup.supported) {
+          const base = await tts.isLanguageSupported({ lang: lang.slice(0, 2) });
+          if (base.supported) useLang = lang.slice(0, 2) as VoiceLang;
+        }
+      } catch { /* language check is best-effort; speak anyway */ }
+      await tts.speak({ text: clean, lang: useLang, rate: 1.0, pitch: 1.0, volume: 1.0, category: 'ambient', queueStrategy: QueueStrategy.Flush });
+      return true;
+    } catch {
+      // Native engine failed (e.g. no TTS data installed) — fall through to Web Speech.
+    }
+  }
+  try {
+    const core = await import('./core');
+    return await core.speakWebAsync(clean, lang);
+  } catch {
+    return false;
+  }
+}
+
+/** Stop any speech, native or web. */
+export async function stopAloud(): Promise<void> {
+  const native = await getNativeTts();
+  if (native) { try { await native.tts.stop(); } catch { /* ignore */ } }
+  try {
+    const core = await import('./core');
+    core.stopWebSpeaking();
+  } catch { /* ignore */ }
+}
+
+/** Open the Android screen that installs missing TTS voice data. No-op on web. */
+export async function openTtsInstall(): Promise<boolean> {
+  const native = await getNativeTts();
+  if (!native) return false;
+  try { await native.tts.openInstall(); return true; } catch { return false; }
+}
+
 export async function rescheduleNativeReminders(list: NativeReminder[]): Promise<boolean> {
   const ln = await getLocalNotifications();
   if (!ln) return false;

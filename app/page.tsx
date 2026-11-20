@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AppData, MuseTheme, Priority, Project, Settings, Task, THEMES, UltronReminder, VOICE_KEYWORDS, findTaskByWords, loadData, parseTimeOfDay, parseVoiceTask, pickVoice, seedData, speakText, stopSpeaking, STORE_KEY, taskSpeechText, todayStr, addDaysStr } from '../src/lib/core';
-import { checkMicrophonePermission, checkNativeNotificationPermission, isNativeApp, requestMicrophonePermission, requestNativeNotificationPermission, rescheduleNativeReminders, sendTestNativeNotification, type NativeReminder } from '../src/lib/native';
+import { AppData, MuseTheme, Priority, Project, Settings, Task, THEMES, UltronReminder, VOICE_KEYWORDS, findTaskByWords, parseTimeOfDay, parseVoiceTask, seedData, taskSpeechText, todayStr, addDaysStr } from '../src/lib/core';
+import { checkMicrophonePermission, checkNativeNotificationPermission, isNativeApp, openTtsInstall, requestMicrophonePermission, requestNativeNotificationPermission, rescheduleNativeReminders, sendTestNativeNotification, speakAloud, stopAloud, type NativeReminder } from '../src/lib/native';
 import { debouncedSaveToSupabase, loadFromSupabase, supabaseConfigured } from '../src/lib/supabase';
 import Avatar, { type AvatarState } from '@/components/ui/components-primitives-avatar';
 import { Bell, Calendar, CalendarDays, ChevronLeft, ChevronRight, Home as HomeIcon, Mic, Pencil, Plus, Search, Send, Square, Trash2, User, Volume2, X } from 'lucide-react';
@@ -43,31 +43,73 @@ export default function Home() {
   // Microphone permission, shown in Profile > Settings next to Notifications.
   // 'granted' | 'denied' | 'prompt' (not asked yet) | 'unknown'.
   const [micState, setMicState] = useState('unknown');
-  const [dataSource, setDataSource] = useState<'local' | 'supabase'>('local');
+  // Where the data lives: Supabase is the ONLY store (user decision,
+  // 20 Nov 2026 — no localStorage any more). 'unconfigured' = the app
+  // was built without the Supabase URL/anon key; 'supabase-error' =
+  // configured but the cloud could not be reached, so nothing is
+  // saved rather than risk overwriting the cloud with seed data.
+  const [dataSource, setDataSource] = useState<'supabase' | 'unconfigured' | 'supabase-error'>('unconfigured');
+  const [cloudReady, setCloudReady] = useState(false);
   const recogRef = useRef<unknown>(null);
+  // Ultron conversation context — what he remembers from this chat so
+  // follow-ups like "mark it done", "move it to tomorrow", "remind me
+  // at 2pm" or just "yes" work without repeating the task name.
+  const ultronCtxRef = useRef<{ lastTaskId: number | null; lastTaskTitle: string | null; lastOffer: 'reminder' | null }>({ lastTaskId: null, lastTaskTitle: null, lastOffer: null });
+  const awaitingTimeForRef = useRef<number | null>(null);
+  // Live voice capture: what Ultron is hearing right now (interim) and
+  // the final transcript so far. A final result auto-sends (see the
+  // pendingVoiceSend effect) so speaking alone gets a reply.
+  const [ultronHeard, setUltronHeard] = useState<string | null>(null);
+  const [pendingVoiceSend, setPendingVoiceSend] = useState<string | null>(null);
+  const finalTranscriptRef = useRef('');
+  const autoSendRef = useRef<number | null>(null);
+  const chatRef = useRef<HTMLDivElement | null>(null);
+  const ultronInputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  async function loadCloud(): Promise<boolean> {
+    if (!supabaseConfigured()) { setDataSource('unconfigured'); setCloudReady(false); return false; }
+    const remote = await loadFromSupabase().catch(() => null);
+    if (!remote) { setDataSource('supabase-error'); setCloudReady(false); return false; }
+    // Supabase is the source of truth — even empty tables replace the
+    // in-memory seed data, so the phone never invents tasks the cloud
+    // does not have.
+    setData((d) => ({
+      ...d,
+      projects: remote.projects ?? [],
+      tasks: remote.tasks ?? [],
+      ultronReminders: remote.ultronReminders ?? [],
+      ...(remote.settings ? { settings: { ...d.settings, ...remote.settings } } : {}),
+      ...(remote.profile ? { profile: { ...d.profile, ...remote.profile } } : {}),
+    }));
+    setDataSource('supabase');
+    setCloudReady(true);
+    return true;
+  }
 
   useEffect(() => {
-    const local = loadData();
-    setData(local);
-    setLoaded(true);
-    // Supabase is the source of truth when configured; localStorage is
-    // the offline fallback. Never crashes when env vars are missing.
-    if (supabaseConfigured()) {
-      loadFromSupabase().then((remote) => {
-        if (!remote) return;
-        setData((d) => ({
-          ...d,
-          ...(remote.projects?.length ? { projects: remote.projects } : {}),
-          ...(remote.tasks?.length ? { tasks: remote.tasks } : {}),
-          ...(remote.ultronReminders ? { ultronReminders: remote.ultronReminders } : {}),
-          ...(remote.settings ? { settings: { ...d.settings, ...remote.settings } } : {}),
-          ...(remote.profile ? { profile: { ...d.profile, ...remote.profile } } : {}),
-        }));
-        setDataSource('supabase');
-      }).catch(() => {});
-    }
+    // In-memory seed defaults only until the cloud answers. Nothing is
+    // read from or written to this phone's storage.
+    loadCloud().catch(() => { setDataSource('supabase-error'); setCloudReady(false); }).finally(() => setLoaded(true));
   }, []);
-  useEffect(() => { if (loaded) { localStorage.setItem(STORE_KEY, JSON.stringify(data)); debouncedSaveToSupabase(data); } }, [data, loaded]);
+  // Save every change to Supabase — and only after the cloud has loaded,
+  // so seed defaults can never overwrite real cloud data.
+  useEffect(() => { if (loaded && cloudReady) debouncedSaveToSupabase(data); }, [data, loaded, cloudReady]);
+  // Scroll the Ultron chat to the newest message.
+  useEffect(() => { const el = chatRef.current; if (el) el.scrollTop = el.scrollHeight; }, [ultronMsgs, ultronOpen]);
+  // Shrink the Ultron input back to one line once it is sent / cleared.
+  useEffect(() => { if (!ultronInput) growUltronInput(ultronInputRef.current); }, [ultronInput]);
+  // A spoken final transcript auto-sends once Ultron has heard it, so
+  // talking alone gets a reply — no need to tap Send. Runs after
+  // re-render, so handleUltronSend sees the latest task data.
+  useEffect(() => {
+    if (!pendingVoiceSend) return;
+    const text = pendingVoiceSend;
+    setPendingVoiceSend(null);
+    setUltronInput('');
+    setUltronHeard(null);
+    handleUltronSend(text);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingVoiceSend]);
   // Apple normal mode: --accent is white, no red anywhere. Ultron mode
   // (sheet open): --accent/--accent2 switch to crimson/ember and the
   // body gets .ultron-mode, so the red gradient + red buttons appear
@@ -111,14 +153,14 @@ export default function Home() {
     if (!loaded) return;
     const check = () => {
       const now = new Date(); const today = todayStr(now);
-      // Ultron-scheduled voice reminders (stored locally, no server).
+      // Ultron-scheduled voice reminders (stored in Supabase, not on the phone).
       if (data.settings.backgroundReminders) {
         for (const r of data.ultronReminders.filter((x) => !x.fired)) {
           const at = new Date(`${r.date}T${r.time}:00`).getTime();
           if (now.getTime() >= at && now.getTime() < at + 5 * 60 * 1000) {
             const msg = `Hey ${data.profile.name || 'Pranav'}, ${r.message}`;
             setToast(msg);
-            if (data.settings.voiceReminders) speakText(msg, data.settings.voiceLang);
+            if (data.settings.voiceReminders) void speakAloud(msg, data.settings.voiceLang);
             if (data.settings.notificationsEnabled && 'Notification' in window && Notification.permission === 'granted') { try { new Notification('Ultron reminder', { body: msg, icon: '/icon-192.png' }); } catch { /* ignore */ } }
             setData((d) => ({ ...d, ultronReminders: d.ultronReminders.map((x) => x.id === r.id ? { ...x, fired: true } : x) }));
           }
@@ -140,7 +182,7 @@ export default function Home() {
           ? `Hey ${data.profile.name || 'Pranav'}, you haven't done “${t.title}” yet — it was due at ${t.dueTime || 'today'}. Have you done it? Want me to mark it done or move it?`
           : `Hey ${data.profile.name || 'Pranav'}, “${t.title}” is due at ${t.dueTime || 'today'}. Have you got it ready?`;
         setToast(msg);
-        if (data.settings.voiceReminders) speakText(msg, data.settings.voiceLang);
+        if (data.settings.voiceReminders) void speakAloud(msg, data.settings.voiceLang);
         if (data.settings.notificationsEnabled && 'Notification' in window && Notification.permission === 'granted') {
           try { new Notification('Task Reminder', { body: msg, icon: '/icon-192.png' }); } catch { /* ignore */ }
         }
@@ -282,10 +324,22 @@ export default function Home() {
     if (p === 'granted') { setToast('Notifications on — I will remind you 2 hours before a task is due, and again if you miss it.'); await sendTestNotification(); }
     else setToast('Notification permission was not granted. You can turn it on in Settings, or in your browser site settings.');
   }
-  function listen(text: string, id: string) {
-    if (speaking === id) { stopSpeaking(); setSpeaking(null); return; }
-    if (speakText(text, data.settings.voiceLang)) setSpeaking(id); else setToast('Speech is not available on this device.');
-    setTimeout(() => setSpeaking((s) => (s === id ? null : s)), 30000);
+  async function listen(text: string, id: string) {
+    if (speaking === id) { await stopAloud(); setSpeaking(null); return; }
+    // Native Android TTS first, Web Speech fallback — never the old
+    // sync check that said "not available" while a voice existed.
+    const ok = await speakAloud(text, data.settings.voiceLang);
+    if (ok) { setSpeaking(id); return; }
+    setToast('Speech is not available on this device — no voice engine answered. Check that Google Text-to-Speech is installed and enabled (Android Settings > Apps), then try again.');
+    if (isNativeApp()) { await openTtsInstall(); }
+  }
+  async function testVoice() {
+    const ok = await speakAloud('Hey Pranav, this is Ultron. Your voice is working.', data.settings.voiceLang);
+    if (ok) setToast('Voice is working — you should have heard Ultron speak.');
+    else {
+      setToast('No voice engine answered. Opening the Android TTS installer — install the voice data, then try again.');
+      await openTtsInstall();
+    }
   }
   function listenToday() {
     const items = todayTasks.filter((t) => t.status === 'todo');
@@ -293,24 +347,22 @@ export default function Home() {
     listen(items.map((t) => taskSpeechText(t)).join(' '), 'today');
   }
   // Speak an Ultron reply aloud (only when Voice reminders is ON).
-  // The avatar is eyes-only: while speaking its eyes widen and it glows.
-  // Safety net below clears the speaking state if onend never fires.
-  function speakUltron(text: string) {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+  // Native Android TTS speaks promptly in the chosen language
+  // (en-IN / hi-IN / mr-IN); the avatar shows "speaking" while it
+  // talks, and the safety net clears it if the engine never reports back.
+  async function speakUltron(text: string) {
+    if (typeof window === 'undefined') return;
     if (!data.settings.voiceReminders) return;
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = data.settings.voiceLang;
-    const v = pickVoice(data.settings.voiceLang);
-    if (v) u.voice = v;
-    u.onstart = () => setUltronSpeaking(true);
-    u.onend = () => setUltronSpeaking(false);
-    u.onerror = () => setUltronSpeaking(false);
-    setUltronSpeaking(true);
-    window.speechSynthesis.speak(u);
-    // Safety net: never leave the speaking state on if onend never fires.
     if (ultronSpeakTimerRef.current) clearTimeout(ultronSpeakTimerRef.current);
-    ultronSpeakTimerRef.current = window.setTimeout(() => setUltronSpeaking(false), Math.min(60000, Math.max(4000, text.length * 90)));
+    setUltronSpeaking(true);
+    try {
+      // Race the engine against a time budget so a silent engine can
+      // never leave the avatar stuck in "speaking".
+      const budget = Math.min(60000, Math.max(4000, text.length * 90));
+      await Promise.race([speakAloud(text, data.settings.voiceLang), new Promise((r) => { ultronSpeakTimerRef.current = window.setTimeout(r, budget); })]);
+    } catch { /* a silent reply is better than a stuck speaking state */ }
+    if (ultronSpeakTimerRef.current) { clearTimeout(ultronSpeakTimerRef.current); ultronSpeakTimerRef.current = null; }
+    setUltronSpeaking(false);
   }
   function ultronReply(text: string) { setUltronMsgs((m) => [...m, { role: 'ultron', text }]); speakUltron(text); }
   function handleUltronSend(raw: string) {
@@ -320,36 +372,89 @@ export default function Home() {
     const lower = text.toLowerCase();
     const open = data.tasks.filter((t) => t.status === 'todo');
     const todayOpen = open.filter((t) => t.kind === 'daily' || t.dueDate === today || (t.dueDate && t.dueDate < today));
+    // --- Conversation context: remember the task just talked about, so
+    // "mark it done", "move it to tomorrow", "remind me at 2pm" (no
+    // name) and a plain "yes" all act on the right task. ---
+    const ctx = ultronCtxRef.current;
+    const rememberTask = (t: Task | null) => { if (t) { ctx.lastTaskId = t.id; ctx.lastTaskTitle = t.title; } };
+    const resolveTask = (list: Task[] = data.tasks): Task | null => {
+      const named = findTaskByWords(list, text);
+      if (named) return named;
+      // No name in this message — "it", "that one", or a bare action
+      // ("mark it done", "move it") means the task we just discussed.
+      if (ctx.lastTaskId) return list.find((t) => t.id === ctx.lastTaskId) || data.tasks.find((t) => t.id === ctx.lastTaskId) || null;
+      return null;
+    };
+    // Ultron just asked "what time?" for a reminder — a bare time
+    // ("2pm", "tomorrow at 9") answers that question.
+    if (awaitingTimeForRef.current) {
+      const time = parseTimeOfDay(text);
+      if (time) {
+        const taskId = awaitingTimeForRef.current;
+        awaitingTimeForRef.current = null;
+        const task = data.tasks.find((t) => t.id === taskId);
+        const date = lower.includes('tomorrow') ? addDaysStr(today, 1) : today;
+        const title = task ? task.title : ctx.lastTaskTitle || 'your task';
+        const id = Math.max(0, ...data.ultronReminders.map((r) => r.id)) + 1;
+        const msg = `this is your reminder for “${title}” at ${time}. Have you done it yet? Want me to mark it done or move it?`;
+        save((d) => ({ ...d, ultronReminders: [...d.ultronReminders, { id, title, taskId: task ? task.id : null, date, time, message: msg, fired: false, createdAt: new Date().toISOString() }] }));
+        ctx.lastOffer = null;
+        ultronReply(`Done, Pranav. I have set a friendly voice reminder for “${title}” at ${time} on ${date}. I will notify you and speak it aloud then.`);
+        return;
+      }
+    }
+    // A plain "yes" accepts Ultron's last offer (e.g. "Want me to set
+    // a voice reminder for it?") — then he asks what time.
+    if (/^(yes|yeah|yep|ok|okay|sure|do it|please|haan|ha)\b/.test(lower) && ctx.lastOffer === 'reminder' && ctx.lastTaskId) {
+      awaitingTimeForRef.current = ctx.lastTaskId;
+      ultronReply(`Great — what time should I remind you about “${ctx.lastTaskTitle}”? Say it like “2pm” or “tomorrow at 9”.`);
+      return;
+    }
+    if (/^(no|nope|not now|later)\b/.test(lower) && ctx.lastOffer) {
+      ctx.lastOffer = null; awaitingTimeForRef.current = null;
+      ultronReply('No problem, Pranav. Tell me whenever you are ready.');
+      return;
+    }
     // Remind me at <time> [with a voice reminder] [for <task>]
     if (lower.includes('remind')) {
       const time = parseTimeOfDay(text);
       const date = lower.includes('tomorrow') ? addDaysStr(today, 1) : today;
       if (!time) { ultronReply('Of course. What time should I remind you? Say it like “remind me at 2pm with a voice reminder”.'); return; }
-      const task = findTaskByWords(data.tasks, text);
+      const task = resolveTask(data.tasks);
       const title = task ? task.title : text.replace(/remind me( at)?/i, '').replace(/\d{1,2}(:\d{2})?\s*(am|pm|o'clock)?/i, '').replace(/with a (voice )?reminder/i, '').replace(/for /i, '').trim() || 'your task';
       const id = Math.max(0, ...data.ultronReminders.map((r) => r.id)) + 1;
       const msg = `this is your reminder for “${title}” at ${time}. Have you done it yet? Want me to mark it done or move it?`;
       save((d) => ({ ...d, ultronReminders: [...d.ultronReminders, { id, title, taskId: task ? task.id : null, date, time, message: msg, fired: false, createdAt: new Date().toISOString() }] }));
+      rememberTask(task); ctx.lastOffer = null;
       ultronReply(`Done, Pranav. I have set a friendly voice reminder for “${title}” at ${time} on ${date}. I will notify you and speak it aloud then — as long as the app has been opened recently, and Background reminders and Voice reminders are on in Settings.`);
       return;
     }
     if (lower.includes('mark') && lower.includes('done')) {
-      const task = findTaskByWords(open, text);
+      const task = resolveTask(open);
       if (!task) { ultronReply('Which task should I mark done? Tell me its name, for example “mark Wake up done”.'); return; }
-      toggleTask(task); ultronReply(`Done — “${task.title}” is marked done. Nice work, Pranav.`);
+      toggleTask(task); rememberTask(task); ctx.lastOffer = null;
+      ultronReply(`Done — “${task.title}” is marked done. Nice work, Pranav.`);
       return;
     }
-    if (lower.includes('move') || lower.includes('reschedule') || lower.includes('push') || lower.includes('tomorrow')) {
-      const task = findTaskByWords(data.tasks, text);
+    // "move / reschedule / push" moves a task. A bare "tomorrow"
+    // ("what's tomorrow?") is a summary question, not a move — it
+    // falls through to the Tomorrow branch below. The tomorrow check
+    // uses the NAMED match only, so a discussed task is never moved
+    // by accident when Pranav just asks about tomorrow.
+    if (lower.includes('move') || lower.includes('reschedule') || lower.includes('push') || (lower.includes('tomorrow') && findTaskByWords(data.tasks, text))) {
+      const task = resolveTask(data.tasks);
       const date = lower.includes('tomorrow') ? addDaysStr(today, 1) : lower.includes('next week') ? addDaysStr(today, 7) : today;
       if (!task) { ultronReply('Which task should I move? Tell me its name and the new day, for example “move Set up news to tomorrow”.'); return; }
       save((d) => ({ ...d, tasks: d.tasks.map((x) => x.id === task.id ? { ...x, dueDate: date } : x) }));
+      rememberTask(task); ctx.lastOffer = null;
       ultronReply(`Moved “${task.title}” to ${date}. I will remind you before then.`);
       return;
     }
     if (lower.includes('create') || lower.includes('add') || lower.includes('new task')) {
       const draft0 = parseVoiceTask(text.replace(/^(create|add|new task)\s*/i, ''), data.projects);
-      save((d) => { const id = Math.max(0, ...d.tasks.map((x) => x.id)) + 1; return { ...d, tasks: [...d.tasks, { id, title: draft0.title, notes: draft0.notes, projectId: draft0.projectId, dueDate: draft0.dueDate, dueTime: draft0.dueTime, kind: draft0.kind, priority: draft0.priority, remindersPerDay: draft0.priority === 'high_alert' ? 3 : 0, status: 'todo', completedAt: null, dailyDoneOn: null }] }; });
+      const newId = Math.max(0, ...data.tasks.map((x) => x.id)) + 1;
+      save((d) => ({ ...d, tasks: [...d.tasks, { id: newId, title: draft0.title, notes: draft0.notes, projectId: draft0.projectId, dueDate: draft0.dueDate, dueTime: draft0.dueTime, kind: draft0.kind, priority: draft0.priority, remindersPerDay: draft0.priority === 'high_alert' ? 3 : 0, status: 'todo', completedAt: null, dailyDoneOn: null }] }));
+      rememberTask({ ...draft0, id: newId } as Task); ctx.lastOffer = null;
       ultronReply(`Created “${draft0.title}”${draft0.dueDate ? ` for ${draft0.dueDate}` : ''}${draft0.dueTime ? ` at ${draft0.dueTime}` : ''}. You can edit it from Home.`);
       return;
     }
@@ -387,6 +492,8 @@ export default function Home() {
     if (lower.includes('next') || lower.includes('first') || lower.includes('most important') || lower.includes('priority')) {
       const sorted = [...open].sort((a, b) => (a.priority === 'high_alert' ? 0 : a.priority === 'high' ? 1 : 2) - (b.priority === 'high_alert' ? 0 : b.priority === 'high' ? 1 : 2) || (a.dueDate || '9999').localeCompare(b.dueDate || '9999'));
       if (!sorted.length) { ultronReply('Nothing left open — you are done, Pranav.'); return; }
+      // Remember this task + the offer, so a follow-up "yes" works.
+      rememberTask(sorted[0]); ctx.lastOffer = 'reminder';
       ultronReply(`Your most important next task is ${fmt(sorted[0])}. After that: ${sorted.slice(1, 3).map(fmt).join(', ') || 'nothing else scheduled'}. Want me to set a voice reminder for it?`);
       return;
     }
@@ -398,7 +505,7 @@ export default function Home() {
       ultronReply(`${namedProject.name}: ${pt.length} task${pt.length === 1 ? '' : 's'} in total, ${po.length} still open${po.length ? ` — ${po.map(fmt).join(', ')}` : ''}. ${namedProject.description || ''}`);
       return;
     }
-    if (lower.includes('today') || lower.includes('what') && lower.includes('do')) {
+    if (lower.includes('today') || (lower.includes('what') && lower.includes('do'))) {
       if (!todayOpen.length) { ultronReply('Nothing open for today, Pranav. You are all caught up.'); return; }
       ultronReply(`Today you have ${todayOpen.length} open task${todayOpen.length > 1 ? 's' : ''}: ${todayOpen.map((t) => `“${t.title}”${t.dueTime ? ` at ${t.dueTime}` : ''}`).join(', ')}. Shall I read them aloud, or mark one done?`);
       return;
@@ -412,17 +519,29 @@ export default function Home() {
       ultronReply(`Hey Pranav. You have ${todayOpen.length} task${todayOpen.length === 1 ? '' : 's'} open today. Want the list, or shall I remind you about one at a time?`);
       return;
     }
+    // Named-task fallback only — no context fallback here, or any
+    // unrecognised sentence would "find" the last-discussed task.
     const found = findTaskByWords(data.tasks, text);
-    if (found) { ultronReply(`I found “${found.title}” — ${found.status === 'done' ? 'already done' : 'still open'}${found.dueDate ? `, due ${found.dueDate}` : ''}${found.dueTime ? ` at ${found.dueTime}` : ''}, priority ${found.priority}. Want me to mark it done, move it, or remind you about it?`); return; }
+    if (found) { rememberTask(found); ultronReply(`I found “${found.title}” — ${found.status === 'done' ? 'already done' : 'still open'}${found.dueDate ? `, due ${found.dueDate}` : ''}${found.dueTime ? ` at ${found.dueTime}` : ''}, priority ${found.priority}. Want me to mark it done, move it, or remind you about it?`); return; }
     // General Q&A fallback — answer from real data, never invent.
     const nextDue = [...open].filter((t) => t.dueDate && t.dueDate >= today).sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''))[0];
     ultronReply(`Here is what I know right now, Pranav: ${open.length} task${open.length === 1 ? ' is' : 's are'} open, ${overdue.length} overdue, ${todayOpen.length} due today, and ${doneCount} already done. ${nextDue ? `Your next dated task is ${fmt(nextDue)}.` : 'No dated tasks are coming up.'} Ask me things like “what's my week look like?”, “what's overdue?”, “how am I doing?”, “what's next?”, “remind me at 2pm with a voice reminder”, or name a task or a project and I will tell you about it.`);
   }
+  // Auto-growing Ultron input: grows to ~5 lines as he types, then
+  // scrolls inside the box instead of growing forever.
+  function growUltronInput(el: HTMLTextAreaElement | null) {
+    if (!el) return;
+    el.style.height = 'auto';
+    const lineHeight = 24;
+    el.style.height = Math.min(el.scrollHeight, lineHeight * 5) + 'px';
+  }
   function stopUltronListening() {
     ultronSessionRef.current = false;
     if (ultronRestartRef.current) { window.clearTimeout(ultronRestartRef.current); ultronRestartRef.current = null; }
+    if (autoSendRef.current) { window.clearTimeout(autoSendRef.current); autoSendRef.current = null; }
     (recogRef.current as { stop?: () => void } | null)?.stop?.();
     setUltronListening(false);
+    setUltronHeard(null);
   }
   async function ultronMic() {
     // Tap again while listening = Stop. The mic stays on until Stop is tapped.
@@ -441,15 +560,43 @@ export default function Home() {
       return;
     }
     setMicState('granted');
-    const rec = new SR() as { continuous: boolean; interimResults: boolean; lang: string; onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null; onerror: ((e: { error?: string }) => void) | null; onend: (() => void) | null; start: () => void; stop: () => void };
-    rec.continuous = true; rec.interimResults = true; rec.lang = data.settings.voiceLang;
+    const rec = new SR() as { continuous: boolean; interimResults: boolean; lang: string; maxAlternatives: number; onresult: ((e: { resultIndex: number; results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> }) => void) | null; onerror: ((e: { error?: string }) => void) | null; onend: (() => void) | null; start: () => void; stop: () => void };
+    // Accuracy + speed: listen in the language Pranav chose in
+    // Settings (en-IN / hi-IN / mr-IN), keep listening until Stop,
+    // and show interim words live as they are heard.
+    rec.continuous = true; rec.interimResults = true; rec.lang = data.settings.voiceLang; rec.maxAlternatives = 1;
     ultronSessionRef.current = true;
+    finalTranscriptRef.current = '';
     setMicHint(null);
+    setUltronHeard('Listening… speak now.');
     rec.onresult = (e) => {
-      let txt = '';
-      for (let i = 0; i < e.results.length; i++) txt += e.results[i][0].transcript;
-      setUltronInput(txt);
+      let interim = '';
+      let finalPart = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) finalPart += r[0].transcript;
+        else interim += r[0].transcript;
+      }
+      if (finalPart.trim()) {
+        finalTranscriptRef.current = (finalTranscriptRef.current ? finalTranscriptRef.current + ' ' : '') + finalPart.trim();
+      }
+      // Live transcript: what Ultron heard so far, final + interim.
+      const heard = (finalTranscriptRef.current + (interim ? (finalTranscriptRef.current ? ' ' : '') + interim : '')).trim();
+      if (heard) { setUltronInput(heard); setUltronHeard(`Heard: “${heard}”`); }
       setMicHint(null);
+      // Act only on the FINAL transcript — and act on it automatically.
+      // Before this fix speaking filled the box but nothing happened
+      // until Send was tapped, so Ultron seemed to ignore Pranav.
+      if (finalPart.trim()) {
+        if (autoSendRef.current) window.clearTimeout(autoSendRef.current);
+        autoSendRef.current = window.setTimeout(() => {
+          const t = finalTranscriptRef.current.trim();
+          if (!t) return;
+          finalTranscriptRef.current = '';
+          stopUltronListening();
+          setPendingVoiceSend(t);
+        }, 900);
+      }
     };
     rec.onerror = (ev) => {
       const err = (ev as { error?: string }).error;
@@ -471,7 +618,7 @@ export default function Home() {
         try { rec.start(); } catch { setUltronListening(false); }
       }, 300);
     };
-    stopSpeaking(); setUltronSpeaking(false);
+    void stopAloud(); setUltronSpeaking(false);
     recogRef.current = rec;
     try { rec.start(); } catch { setToast('Could not start the microphone. Try again.'); return; }
     setUltronListening(true);
@@ -530,10 +677,9 @@ export default function Home() {
 
       {view === 'today' && (
         <div>
-          <div className="row" style={{ marginTop: 12 }}>
+          <div className="home-actions">
             <button className="btn" onClick={openNewTask}><Plus size={18} /> Add task</button>
-            <button className="btn ghost iconbtn" onClick={listenToday} aria-label="Read today's tasks aloud" title="Read today's tasks aloud">{speaking === 'today' ? <Square size={18} /> : <Volume2 size={18} />} Listen</button>
-            <button className="btn ghost" onClick={() => setView('reminders')}><Bell size={18} /> Reminders{reminders.length ? ` (${reminders.length})` : ''}</button>
+            <button className="btn ghost" onClick={() => void listenToday()} aria-label="Read today's tasks aloud" title="Read today's tasks aloud">{speaking === 'today' ? <Square size={18} /> : <Volume2 size={18} />} Listen</button>
           </div>
           <h3>Today</h3>
           {todayTasks.length ? todayTasks.map(taskRow) : <p className="muted">Nothing open for today. Add a task, or speak one.</p>}
@@ -615,7 +761,23 @@ export default function Home() {
                 {micState !== 'granted' && <button className="btn ghost small" onClick={checkMicStatus}>Re-check permission</button>}
               </div>
             </div>
-            <p className="muted">Data: {dataSource === 'supabase' ? 'saved in Supabase (cloud) and on this phone' : 'saved only on this phone (localStorage) — set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to sync to Supabase. See README.'}</p>
+            <p className="muted">Data: {!loaded ? 'loading your data from Supabase…' : dataSource === 'supabase'
+              ? 'saved in Supabase (cloud). Nothing is stored on this phone.'
+              : dataSource === 'supabase-error'
+                ? 'Supabase is configured but could not be reached — nothing is being saved right now, so your cloud data is safe. Check your connection and tap Retry below.'
+                : 'Supabase is NOT connected — this build has no Supabase URL/key, so your data lives only in this session and is lost when the app closes. Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY as GitHub repo secrets and rebuild the APK.'}</p>
+            {dataSource !== 'supabase' && (
+              <div className="row" style={{ flexWrap: 'wrap' }}>
+                <button className="btn small" onClick={async () => { setLoaded(false); const ok = await loadCloud(); setLoaded(true); setToast(ok ? 'Connected to Supabase — your cloud data is loaded.' : 'Still cannot reach Supabase. Check the secrets and your connection, then try again.'); }}>Retry Supabase</button>
+              </div>
+            )}
+            <div style={{ marginTop: 12 }}>
+              <div className="row"><strong>Voice (Listen / Ultron speech)</strong></div>
+              <p className="muted">Speaks with your phone's own text-to-speech engine, in the voice language chosen above. If you hear nothing, tap Test voice — it will say so, and open the Android installer for missing voice data.</p>
+              <div className="row" style={{ flexWrap: 'wrap' }}>
+                <button className="btn small" onClick={() => void testVoice()}>Test voice</button>
+              </div>
+            </div>
             <p className="muted">This is the native Android app: reminders are scheduled on your phone with Capacitor LocalNotifications, so the notification fires even when the app is closed. The voice speaks when the app opens (or when you tap the notification) — Android does not let a WebView app speak out loud from a fully closed state. While the app is open, it checks every minute and will notify, show and speak the reminder. If Background reminders are OFF, nothing is scheduled or notified. If Voice reminders are OFF, you get text notifications only, no speech.</p>
           </div>
         </div>
@@ -651,7 +813,7 @@ export default function Home() {
         <div className="ultron-full">
           <div className="row" style={{ justifyContent: 'space-between' }}>
             <strong>Ultron</strong>
-            <button className="btn ghost small iconbtn" onClick={() => { stopUltronListening(); stopSpeaking(); setUltronSpeaking(false); setUltronOpen(false); }} aria-label="Close Ultron"><X size={16} /> Close</button>
+            <button className="btn ghost small iconbtn" onClick={() => { stopUltronListening(); void stopAloud(); setUltronSpeaking(false); setUltronOpen(false); }} aria-label="Close Ultron"><X size={16} /> Close</button>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 16 }}>
             <Avatar size="xl" color="blue" state={ultronAvatarState} onClick={ultronMic} />
@@ -660,14 +822,23 @@ export default function Home() {
             </div>
             {micHint && <div className="muted" style={{ marginTop: 6, textAlign: 'center' }}>{micHint}</div>}
           </div>
-          <div className="ultron-chat">
+          <div className="ultron-chat" ref={chatRef}>
             {ultronMsgs.map((m, i) => <div key={i} style={{ margin: '8px 0', textAlign: m.role === 'user' ? 'right' : 'left' }}><span style={{ display: 'inline-block', padding: '8px 12px', borderRadius: 14, background: m.role === 'user' ? 'var(--accent)' : 'rgba(255,255,255,.14)', color: '#fff', maxWidth: '88%' }}>{m.text}</span></div>)}
           </div>
           <div className="ultron-inputbar">
-            <button className={`mic ${ultronListening ? 'listening' : ''}`} style={{ width: 52, height: 52, flexShrink: 0 }} onClick={ultronMic} aria-label={ultronListening ? 'Stop listening' : 'Speak to Ultron'}>{ultronListening ? <Square size={20} /> : <Mic size={22} />}</button>
-            <input className="field" style={{ flex: 1, margin: 0 }} value={ultronInput} onChange={(e) => setUltronInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleUltronSend(ultronInput); }} placeholder="Talk to Ultron…" />
-            <button className="btn ultron-send" onClick={() => handleUltronSend(ultronInput)}><Send size={16} /> Send</button>
+            <button className={`mic ${ultronListening ? 'listening' : ''}`} style={{ width: 52, height: 52, flexShrink: 0, alignSelf: 'flex-end' }} onClick={() => void ultronMic()} aria-label={ultronListening ? 'Stop listening' : 'Speak to Ultron'}>{ultronListening ? <Square size={20} /> : <Mic size={22} />}</button>
+            <textarea
+              ref={ultronInputRef}
+              className="field ultron-input"
+              rows={1}
+              value={ultronInput}
+              onChange={(e) => { setUltronInput(e.target.value); growUltronInput(e.target); }}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleUltronSend(ultronInput); } }}
+              placeholder="Talk to Ultron…"
+            />
+            <button className="btn ultron-send" style={{ alignSelf: 'flex-end' }} onClick={() => handleUltronSend(ultronInput)}><Send size={16} /> Send</button>
           </div>
+          {ultronHeard && <div className="muted" style={{ marginTop: 8, textAlign: 'center' }}>{ultronHeard}</div>}
           {ultronListening && <div style={{ textAlign: 'center', marginTop: 8 }}><button className="btn ghost small" onClick={stopUltronListening}>Stop listening</button></div>}
         </div>
       )}

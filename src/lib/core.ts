@@ -27,7 +27,14 @@ export interface AppData {
   completedLog: string[]; // YYYY-MM-DD dates with a completion
   ultronReminders: UltronReminder[];
 }
-export const STORE_KEY = 'task-reminder-standalone-v1';
+/**
+ * Data lives ONLY in Supabase (Postgres) — there is no localStorage
+ * in this app any more (user decision, 20 Nov 2026). In-memory state
+ * is the only thing held on the phone while the app runs; every change
+ * is saved to Supabase, and Supabase is loaded on start.
+ * If the env vars below are missing, the app shows "Supabase not
+ * connected" in Profile instead of silently saving locally.
+ */
 export const THEMES: Record<MuseTheme, { name: string; accent: string; accent2: string }> = {
   ocean: { name: 'Ocean', accent: '#0e7c6b', accent2: '#2563eb' },
   sunset: { name: 'Sunset', accent: '#ea580c', accent2: '#db2777' },
@@ -46,6 +53,9 @@ export function todayStr(d = new Date()): string {
 export function addDaysStr(dateStr: string, n: number): string {
   const d = new Date(dateStr + 'T12:00:00'); d.setDate(d.getDate() + n); return todayStr(d);
 }
+/** Initial in-memory defaults, used only until Supabase loads (or when
+ *  Supabase is not connected — in that case they live in memory only
+ *  for this session and are never written to the phone). */
 export function seedData(): AppData {
   return {
     projects: [
@@ -64,13 +74,6 @@ export function seedData(): AppData {
     settings: { notificationsEnabled: true, reminderMinutesBefore: 120, voiceReminders: true, voiceLang: 'en-IN', friendlyReminders: true, backgroundReminders: true, ultronEnabled: true },
     snoozedUntil: {}, dismissed: {}, reminded: {}, completedLog: ['2026-11-12'], ultronReminders: [],
   };
-}
-export function loadData(): AppData {
-  try {
-    const raw = localStorage.getItem(STORE_KEY);
-    if (raw) { const d = JSON.parse(raw) as AppData; return { ...seedData(), ...d, settings: { ...seedData().settings, ...(d.settings || {}) }, profile: { ...seedData().profile, ...(d.profile || {}) } }; }
-  } catch { /* fall through to seed */ }
-  return seedData();
 }
 /** Parse a spoken transcript into an editable draft. */
 export function parseVoiceTask(text: string, projects: Project[]) {
@@ -102,22 +105,47 @@ export function parseVoiceTask(text: string, projects: Project[]) {
   const title = text.trim().replace(/^.{0,120}/, (m) => m).split(/[.!]/)[0].trim().slice(0, 120) || 'New task';
   return { title, notes: text.trim(), dueDate, dueTime, priority, projectId, kind };
 }
-export function pickVoice(lang: VoiceLang): SpeechSynthesisVoice | null {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
-  const voices = window.speechSynthesis.getVoices();
+/** Web Speech voices load ASYNC in the Android WebView — getVoices()
+ *  usually returns [] on the first call, which is why Listen used to
+ *  say "Speech is not available". Wait for the voiceschanged event
+ *  (up to ~2.5s) before deciding there is no voice. */
+export function getVoicesAsync(): Promise<SpeechSynthesisVoice[]> {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return Promise.resolve([]);
+  const synth = window.speechSynthesis;
+  const loaded = synth.getVoices();
+  if (loaded.length) return Promise.resolve(loaded);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; synth.removeEventListener('voiceschanged', finish); resolve(synth.getVoices()); } };
+    synth.addEventListener('voiceschanged', finish);
+    window.setTimeout(finish, 2500);
+  });
+}
+export async function pickVoiceAsync(lang: VoiceLang): Promise<SpeechSynthesisVoice | null> {
+  const voices = await getVoicesAsync();
   return voices.find((v) => v.lang === lang) || voices.find((v) => v.lang && v.lang.startsWith(lang.slice(0, 2))) || voices.find((v) => v.default) || voices[0] || null;
 }
-export function speakText(text: string, lang: VoiceLang) {
+/** Speak via the Web Speech API, waiting for voices first. Returns
+ *  false only when speech synthesis is genuinely unavailable. */
+export async function speakWebAsync(text: string, lang: VoiceLang): Promise<boolean> {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) return false;
-  window.speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = lang;
-  const v = pickVoice(lang);
-  if (v) u.voice = v;
-  window.speechSynthesis.speak(u);
-  return true;
+  try {
+    const synth = window.speechSynthesis;
+    synth.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = lang;
+    const v = await pickVoiceAsync(lang);
+    if (v) u.voice = v;
+    // On some Android WebViews speak() silently does nothing when no
+    // voice is set and none is available — but we waited for voices
+    // above, and u.lang alone lets the engine pick its default voice.
+    synth.speak(u);
+    return true;
+  } catch {
+    return false;
+  }
 }
-export function stopSpeaking() { if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel(); }
+export function stopWebSpeaking() { if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel(); }
 export function taskSpeechText(t: Task): string {
   return `${t.title}. ${t.notes ? t.notes + '. ' : ''}${t.dueTime ? `Due at ${t.dueTime}. ` : ''}Priority ${t.priority === 'high_alert' ? 'high alert' : t.priority}.`;
 }

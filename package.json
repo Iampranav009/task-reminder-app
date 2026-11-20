@@ -1,1 +1,32 @@
-{"dependencies":{"@capacitor/android":"^8.6.2","@capacitor/app":"^8.1.2","@capacitor/cli":"^8.6.2","@capacitor/core":"^8.6.2","@capacitor/local-notifications":"^8.3.1","@supabase/supabase-js":"^2.119.2","lucide-react":"^1.76.0","motion":"^14.14.0","next":"14.2.5","react":"18.3.1","react-dom":"18.3.1"},"description":"Task Reminder App — native Android app (Capacitor, Next.js static export, Supabase, localStorage offline fallback)","devDependencies":{"@types/node":"20.14.12","@types/react":"18.3.3","@types/react-dom":"18.3.0","typescript":"5.5.4"},"name":"task-reminder-app","private":true,"scripts":{"build":"next build","dev":"next dev","export":"next build","start":"next start"},"version":"1.0.0"}
+{
+  "dependencies": {
+    "@capacitor-community/text-to-speech": "^8.0.2",
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/cli": "^8.6.2",
+    "@capacitor/core": "^8.6.2",
+    "@capacitor/local-notifications": "^8.3.1",
+    "@supabase/supabase-js": "^2.119.2",
+    "lucide-react": "^1.76.0",
+    "motion": "^14.14.0",
+    "next": "14.2.5",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "description": "Task Reminder App \u2014 native Android app (Capacitor, Next.js static export, Supabase-only data, native text-to-speech)",
+  "devDependencies": {
+    "@types/node": "20.14.12",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "typescript": "5.5.4"
+  },
+  "name": "task-reminder-app",
+  "private": true,
+  "scripts": {
+    "build": "next build",
+    "dev": "next dev",
+    "export": "next build",
+    "start": "next start"
+  },
+  "version": "1.0.0"
+}

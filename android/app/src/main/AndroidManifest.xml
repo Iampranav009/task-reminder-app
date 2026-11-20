@@ -35,6 +35,16 @@
         </provider>
     </application>
 
+    <!-- Text-to-speech: Android 11+ needs this query so the app can
+         see the system's TTS engine (used by
+         @capacitor-community/text-to-speech for Listen + Ultron's
+         voice). Without it the engine is invisible and speech fails. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
