@@ -7,7 +7,7 @@
 # Flow: npm ci -> npm run build (Next.js static export -> out/)
 #   -> npx cap sync android (copy web assets into the Android project)
 #   -> Gradle assembleDebug -> upload APK as a workflow artifact
-#   -> attach the APK to the v1.0.0 GitHub Release (re-running the
+#   -> attach the APK to the v1.1.0 GitHub Release (re-running the
 #     workflow updates that release with the newest APK).
 name: Android Release APK
 
@@ -121,14 +121,24 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-      - name: Publish GitHub Release v1.0.0 with APK
+      - name: Publish GitHub Release v1.1.0 with APK
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.0
-          name: Task Reminder App v1.0.0 (Android APK)
+          tag_name: v1.1.0
+          name: Task Reminder App v1.1.0 (Android APK)
           files: android/app/build/outputs/apk/debug/app-debug.apk
           body: |
-            ## Task Reminder App — Android APK (v1.0.0)
+            ## Task Reminder App — Android APK (v1.1.0)
+
+            ### What's new in v1.1.0
+
+            - Microphone permission fixed
+            - Ultron answers when you speak with live transcript and auto-send
+            - Listen uses the phone's own text-to-speech (English/Hindi/Marathi)
+            - Chat box grows and scrolls
+            - All data in Supabase only
+            - Home cleaned up (Reminders button removed)
+            
 
             A phone-first reminder app as a real Android app: projects,
             tasks, calendar, reminders inbox, voice capture, Listen
