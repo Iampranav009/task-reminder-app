@@ -6,7 +6,7 @@ export const metadata: Metadata = {
   manifest: '/manifest.json',
   appleWebApp: { capable: true, title: 'Task Reminder App', statusBarStyle: 'black-translucent' },
 };
-export const viewport: Viewport = { width: 'device-width', initialScale: 1, viewportFit: 'cover', themeColor: '#0e7c6b' };
+export const viewport: Viewport = { width: 'device-width', initialScale: 1, viewportFit: 'cover', themeColor: '#000000' };
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">

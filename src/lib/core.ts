@@ -1,6 +1,6 @@
 export type Priority = 'high_alert' | 'high' | 'normal';
 export type TaskKind = 'task' | 'daily';
-export type MuseTheme = 'ocean' | 'sunset' | 'forest' | 'rose' | 'mono';
+export type MuseTheme = 'ocean' | 'sunset' | 'forest' | 'rose' | 'mono' | 'ultron';
 export type VoiceLang = 'en-IN' | 'hi-IN' | 'mr-IN';
 export interface Project { id: number; name: string; description: string; dueDate: string | null; priority: Priority; color: string; }
 export interface Task {
@@ -34,6 +34,10 @@ export const THEMES: Record<MuseTheme, { name: string; accent: string; accent2: 
   forest: { name: 'Forest', accent: '#15803d', accent2: '#65a30d' },
   rose: { name: 'Rose', accent: '#e11d48', accent2: '#7c3aed' },
   mono: { name: 'Mono', accent: '#334155', accent2: '#0f172a' },
+  // Ultron — crimson eyes / energy lines + ember glow. Kept only as the
+  // Profile preview button; normal mode never uses it (see page.tsx:
+  // --accent is white in normal mode, red only while Ultron is open).
+  ultron: { name: 'Ultron', accent: '#e1061f', accent2: '#ff6a1a' },
 };
 export const VOICE_KEYWORDS = ['main task', 'today task', 'tomorrow task', 'monthly task'];
 export function todayStr(d = new Date()): string {
@@ -56,7 +60,7 @@ export function seedData(): AppData {
       { id: 4, title: 'Complete Java, IoT and Math assignments', notes: 'Java CS assignment, the important IoT assignment, and Math.', projectId: null, dueDate: '2026-11-13', dueTime: null, kind: 'task', priority: 'high_alert', remindersPerDay: 3, status: 'done', completedAt: '2026-11-12T18:21:48', dailyDoneOn: null },
       { id: 5, title: 'Set up news for daily work and routine', notes: 'Task 1 and 14 — set up news for daily work and routine.', projectId: null, dueDate: '2026-11-13', dueTime: '09:00', kind: 'task', priority: 'normal', remindersPerDay: 0, status: 'todo', completedAt: null, dailyDoneOn: null },
     ],
-    profile: { name: 'Pranav', role: '', bio: '', museTheme: 'ocean' },
+    profile: { name: 'Pranav', role: '', bio: '', museTheme: 'mono' },
     settings: { notificationsEnabled: true, reminderMinutesBefore: 120, voiceReminders: true, voiceLang: 'en-IN', friendlyReminders: true, backgroundReminders: true, ultronEnabled: true },
     snoozedUntil: {}, dismissed: {}, reminded: {}, completedLog: ['2026-11-12'], ultronReminders: [],
   };

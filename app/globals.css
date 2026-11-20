@@ -1,31 +1,200 @@
-:root { --accent: #0e7c6b; --accent2: #2563eb; --bg: #0b1220; --card: rgba(255,255,255,.08); --text: #f1f5f9; --muted: #94a3b8; }
+/* Task Reminder App — Apple iOS-style redesign.
+   NORMAL MODE (default, whole app): pure black background, white text,
+   soft grey secondary text, subtle frosted-glass cards (low-opacity
+   white glass, thin light borders, large rounded corners). NO red.
+   ULTRON MODE (only while the Ultron sheet is open — body gets the
+   `ultron-mode` class and --accent/--accent2 switch to red): a
+   crimson-to-ember-red gradient (#e1061f mixed toward #ff3b30 /
+   #ff6a1a), glowing red accents, red user bubbles, red mic glow.
+   When the sheet closes, the app returns to clean black/white.
+   Font: Apple system stack. SF Pro is Apple's font and is NOT
+   licensed for download, so it is listed first and falls back
+   gracefully (Inter / system-ui) on Android. Nothing downloaded.
+   Icons: lucide-react (thin line icons). No Tailwind, no shadcn —
+   plain CSS only. */
+:root {
+  --accent: #f5f5f7;          /* normal mode: white (Apple) */
+  --accent2: #a1a1aa;         /* normal mode: soft silver-grey */
+  --ultron: #e1061f;          /* Ultron crimson */
+  --ultron-ember: #ff3b30;    /* reddish blend */
+  --ultron-orange: #ff6a1a;   /* ember */
+  --bg: #000000;              /* pure black */
+  --bg2: #0a0a0a;
+  --card: rgba(255, 255, 255, 0.06);
+  --card-strong: rgba(255, 255, 255, 0.10);
+  --glass-border: rgba(255, 255, 255, 0.12);
+  --glass-highlight: rgba(255, 255, 255, 0.14);
+  --text: #f5f5f7;            /* white */
+  --muted: #98989d;           /* iOS secondary grey */
+  --silver: #d1d1d6;
+  --radius: 20px;
+  --radius-lg: 28px;
+  --radius-sm: 14px;
+  color-scheme: dark;
+}
 * { box-sizing: border-box; }
-body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: linear-gradient(160deg, #0b1220, #12233d 55%, #0e7c6b33); color: var(--text); min-height: 100vh; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", Inter, system-ui, sans-serif;
+  font-size: 17px;
+  line-height: 1.5;
+  letter-spacing: -0.01em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: var(--text);
+  min-height: 100vh;
+  background: #000;
+}
 a { color: inherit; }
-button { font: inherit; cursor: pointer; }
-input, textarea, select { font: inherit; color: #0f172a; }
-.glass { background: var(--card); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); border: 1px solid rgba(255,255,255,.18); border-radius: 20px; box-shadow: 0 8px 32px rgba(0,0,0,.25); }
-.wrap { max-width: 720px; margin: 0 auto; padding: 16px 16px 110px; }
-.topbar { position: sticky; top: 0; z-index: 20; display: flex; gap: 8px; align-items: center; padding: 12px 4px; }
-.topbar input { flex: 1; padding: 11px 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,.25); background: rgba(255,255,255,.12); color: #fff; outline: none; }
-.topbar input::placeholder { color: #cbd5e1; }
-.btn { border: 0; border-radius: 999px; padding: 10px 16px; background: var(--accent); color: #fff; font-weight: 650; }
-.btn.ghost { background: rgba(255,255,255,.14); color: #fff; border: 1px solid rgba(255,255,255,.2); }
-.btn.small { padding: 6px 11px; font-size: 13px; }
-.card { padding: 14px; margin: 10px 0; }
+button { font: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+button:active { transform: scale(0.97); }
+input, textarea, select { font: inherit; color: var(--text); }
+input:focus, textarea:focus, select:focus, button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+input[type="checkbox"] { accent-color: #fff; width: 20px; height: 20px; }
+h1 { font-size: 34px; line-height: 1.15; font-weight: 700; letter-spacing: -0.03em; margin: 8px 0 4px; }
+h3 { font-size: 13px; line-height: 1.4; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 24px 0 10px; }
+strong { font-weight: 650; }
+
+/* Frosted glass, subtle — Apple style. */
+.glass {
+  background: linear-gradient(150deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.04) 55%, rgba(255, 255, 255, 0.06));
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.wrap { max-width: 720px; margin: 0 auto; padding: 16px 16px 116px; }
+.topbar { position: sticky; top: 0; z-index: 20; display: flex; gap: 8px; align-items: center; padding: 12px 4px; background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+.searchwrap { flex: 1; display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 999px; border: 1px solid var(--glass-border); background: rgba(255, 255, 255, 0.08); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); color: var(--muted); }
+.searchwrap input { flex: 1; border: 0; background: none; outline: none; color: #fff; font-size: 17px; padding: 0; min-width: 0; }
+.searchwrap input::placeholder { color: var(--muted); }
+.iconbtn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border-radius: 999px; }
+
+/* Buttons — normal mode: white pill, black text (Apple). */
+.btn {
+  border: 0; border-radius: 999px; padding: 12px 20px;
+  background: #f5f5f7; color: #000; font-weight: 600; letter-spacing: -0.01em;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+}
+.btn.ghost {
+  background: rgba(255, 255, 255, 0.08); color: var(--text);
+  border: 1px solid var(--glass-border); box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+.btn.small { padding: 8px 14px; font-size: 14px; }
+.card { padding: 20px; margin: 16px 0; }
 .row { display: flex; gap: 10px; align-items: center; }
-.muted { color: var(--muted); font-size: 13px; }
-.pill { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 12px; background: rgba(255,255,255,.14); }
-.pill.high_alert { background: #dc2626; } .pill.high { background: #ea580c; } .pill.normal { background: #475569; }
-.nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; display: flex; justify-content: center; padding: 10px 10px calc(10px + env(safe-area-inset-bottom)); background: rgba(11,18,32,.85); backdrop-filter: blur(16px); border-top: 1px solid rgba(255,255,255,.12); }
-.nav button { flex: 1; max-width: 110px; background: none; border: 0; color: #cbd5e1; padding: 6px 2px; font-size: 12px; }
+.muted { color: var(--muted); font-size: 14px; line-height: 1.45; }
+
+/* Priority pills — black/white glass in normal mode, still distinct:
+   high alert = solid white pill, black bold text; high = glass with
+   white border; normal = quiet grey. */
+.pill {
+  display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; letter-spacing: 0.02em;
+  background: rgba(255, 255, 255, 0.08); border: 1px solid var(--glass-border); color: var(--silver);
+  white-space: nowrap;
+}
+.pill.high_alert { background: #f5f5f7; border-color: #fff; color: #000; font-weight: 700; }
+.pill.high { background: rgba(255, 255, 255, 0.14); border-color: rgba(255, 255, 255, 0.35); color: #fff; }
+.pill.normal { background: rgba(255, 255, 255, 0.05); color: var(--muted); }
+
+/* Bottom nav — frosted black glass tab bar, white active state. */
+.nav {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+  display: flex; justify-content: center;
+  padding: 8px 10px calc(10px + env(safe-area-inset-bottom));
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(22px) saturate(1.3); -webkit-backdrop-filter: blur(22px) saturate(1.3);
+  border-top: 1px solid rgba(255, 255, 255, 0.10);
+}
+.nav button { flex: 1; max-width: 110px; background: none; border: 0; color: var(--muted); padding: 6px 2px; font-size: 11px; font-weight: 500; display: flex; flex-direction: column; align-items: center; gap: 3px; }
 .nav button.active { color: #fff; font-weight: 700; }
-.mic { width: 72px; height: 72px; border-radius: 50%; border: 0; font-size: 30px; background: radial-gradient(circle at 35% 30%, var(--accent2), var(--accent)); color: #fff; box-shadow: 0 0 0 6px rgba(255,255,255,.12), 0 10px 30px rgba(0,0,0,.4); }
+.nav button svg { display: block; }
+
+/* Mic — normal mode: white circle, black icon, soft white pulse. */
+.mic {
+  width: 72px; height: 72px; border-radius: 50%; border: 0;
+  background: #f5f5f7; color: #000;
+  display: inline-flex; align-items: center; justify-content: center;
+  box-shadow: 0 0 0 6px rgba(255, 255, 255, 0.08), 0 10px 28px rgba(0, 0, 0, 0.5);
+}
 .mic.listening { animation: pulse 1.2s infinite; }
-@keyframes pulse { 0% { box-shadow: 0 0 0 6px rgba(255,255,255,.15); } 50% { box-shadow: 0 0 0 16px rgba(255,255,255,.05); } 100% { box-shadow: 0 0 0 6px rgba(255,255,255,.15); } }
-.field { width: 100%; padding: 10px 12px; border-radius: 12px; border: 1px solid #cbd5e1; margin: 6px 0; background: #fff; }
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 6px rgba(255, 255, 255, 0.20), 0 0 0 0 rgba(255, 255, 255, 0.25); }
+  50% { box-shadow: 0 0 0 16px rgba(255, 255, 255, 0.04), 0 0 0 10px rgba(255, 255, 255, 0.10); }
+  100% { box-shadow: 0 0 0 6px rgba(255, 255, 255, 0.20), 0 0 0 0 rgba(255, 255, 255, 0.25); }
+}
+
+/* iOS segmented control — Schedule Monthly / Weekly / Daily. */
+.segmented {
+  display: flex; gap: 2px; padding: 2px; border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08); border: 1px solid var(--glass-border);
+}
+.segmented button {
+  flex: 1; border: 0; border-radius: 999px; padding: 9px 12px;
+  background: transparent; color: var(--muted); font-weight: 600; font-size: 14px;
+}
+.segmented button.active { background: #f5f5f7; color: #000; }
+
+/* Fields — dark frosted glass, white text. */
+.field {
+  width: 100%; padding: 13px 16px; border-radius: var(--radius-sm);
+  border: 1px solid var(--glass-border); margin: 6px 0;
+  background: rgba(255, 255, 255, 0.08); color: var(--text);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  font-size: 17px;
+}
+.field::placeholder { color: var(--muted); }
+select.field option { background: #111; color: var(--text); }
+
+/* Calendar — frosted cells. Green = all done, amber = half done,
+   soft red tint = remaining (functional status colours, kept muted). */
 .cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
-.calcell { min-height: 52px; border-radius: 12px; padding: 6px; font-size: 12px; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.1); }
-.calcell.green { background: rgba(34,197,94,.35); } .calcell.red { background: rgba(239,68,68,.35); } .calcell.yellow { background: rgba(234,179,8,.35); }
-.sq { width: 12px; height: 12px; border-radius: 3px; display: inline-block; margin: 1px; background: rgba(255,255,255,.12); }
+.calcell {
+  min-height: 52px; border-radius: var(--radius-sm); padding: 6px; font-size: 13px;
+  background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.calcell.green { background: rgba(48, 209, 88, 0.22); border-color: rgba(48, 209, 88, 0.4); }
+.calcell.red { background: rgba(255, 69, 58, 0.20); border-color: rgba(255, 69, 58, 0.35); }
+.calcell.yellow { background: rgba(255, 204, 0, 0.20); border-color: rgba(255, 204, 0, 0.35); }
+.sq { width: 12px; height: 12px; border-radius: 3px; display: inline-block; margin: 1px; background: rgba(255, 255, 255, 0.12); }
 .toast { position: fixed; left: 16px; right: 16px; bottom: 86px; z-index: 40; padding: 14px; }
+
+/* ---------- ULTRON MODE ----------
+   Active ONLY while the Ultron sheet is open (body.ultron-mode).
+   Crimson-to-ember-red gradient, glowing red accents, red bubbles,
+   red mic glow. Everything else stays black/white. */
+body.ultron-mode {
+  background:
+    radial-gradient(120% 50% at 50% -10%, rgba(225, 6, 31, 0.22) 0%, transparent 55%),
+    radial-gradient(80% 60% at 0% 100%, rgba(255, 106, 26, 0.10) 0%, transparent 55%),
+    #000;
+}
+body.ultron-mode .btn {
+  background: linear-gradient(135deg, #ff3b30, var(--ultron) 55%, #a30012);
+  color: #fff;
+  box-shadow: 0 6px 20px rgba(225, 6, 31, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+body.ultron-mode .btn.ghost {
+  background: rgba(255, 255, 255, 0.08); color: var(--text);
+  border: 1px solid rgba(255, 255, 255, 0.16); box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+body.ultron-mode .mic {
+  background: radial-gradient(circle at 35% 30%, #ff6a1a, var(--ultron) 60%, #8f0010);
+  color: #fff;
+  box-shadow: 0 0 0 6px rgba(225, 6, 31, 0.18), 0 10px 30px rgba(225, 6, 31, 0.5);
+}
+body.ultron-mode .mic.listening { animation: pulse-red 1.2s infinite; }
+@keyframes pulse-red {
+  0% { box-shadow: 0 0 0 6px rgba(255, 59, 48, 0.25), 0 0 0 0 rgba(255, 59, 48, 0.35); }
+  50% { box-shadow: 0 0 0 16px rgba(255, 59, 48, 0.06), 0 0 0 10px rgba(255, 59, 48, 0.12); }
+  100% { box-shadow: 0 0 0 6px rgba(255, 59, 48, 0.25), 0 0 0 0 rgba(255, 59, 48, 0.35); }
+}
+body.ultron-mode .nav button.active { color: #ff453a; }
+body.ultron-mode input[type="checkbox"] { accent-color: var(--ultron); }
+body.ultron-mode input:focus, body.ultron-mode textarea:focus, body.ultron-mode select:focus, body.ultron-mode button:focus-visible { outline-color: var(--ultron); }
+body.ultron-mode .pill.high_alert { background: rgba(225, 6, 31, 0.25); border-color: rgba(255, 59, 48, 0.6); color: #ffb3b8; }
+body.ultron-mode .pill.high { background: rgba(255, 106, 26, 0.20); border-color: rgba(255, 106, 26, 0.5); color: #ffc9a8; }
+.ultron-sheet { border-color: rgba(255, 59, 48, 0.35); box-shadow: inset 0 1px 0 var(--glass-highlight), 0 10px 40px rgba(225, 6, 31, 0.25), 0 8px 24px rgba(0, 0, 0, 0.4); }

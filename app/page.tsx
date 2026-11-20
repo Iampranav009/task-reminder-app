@@ -3,6 +3,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AppData, MuseTheme, Priority, Project, Settings, Task, THEMES, UltronReminder, VOICE_KEYWORDS, findTaskByWords, loadData, parseTimeOfDay, parseVoiceTask, pickVoice, seedData, speakText, stopSpeaking, STORE_KEY, taskSpeechText, todayStr, addDaysStr } from '../src/lib/core';
 import { isNativeApp, requestNativeNotificationPermission, rescheduleNativeReminders, type NativeReminder } from '../src/lib/native';
 import { debouncedSaveToSupabase, loadFromSupabase, supabaseConfigured } from '../src/lib/supabase';
+import Avatar, { type AvatarState } from '@/components/ui/components-primitives-avatar';
+import { Bell, Calendar, CalendarDays, ChevronLeft, ChevronRight, Home as HomeIcon, Mic, Pencil, Plus, Search, Send, Square, Trash2, User, Volume2, X } from 'lucide-react';
 
 type View = 'today' | 'schedule' | 'calendar' | 'reminders' | 'profile';
 const LANGS = [{ v: 'en-IN', l: 'English' }, { v: 'hi-IN', l: 'हिन्दी · Hindi' }, { v: 'mr-IN', l: 'मराठी · Marathi' }] as const;
@@ -29,6 +31,11 @@ export default function Home() {
   const [ultronMsgs, setUltronMsgs] = useState<{ role: 'user' | 'ultron'; text: string }[]>([{ role: 'ultron', text: 'Good to see you, Pranav. I am Ultron — the main brain of this app. I know your tasks, projects and deadlines. Ask me about your day or your week, what is overdue, how you are doing, or say “remind me at 2pm with a voice reminder” and I will schedule it.' }]);
   const [ultronInput, setUltronInput] = useState('');
   const [ultronListening, setUltronListening] = useState(false);
+  const [ultronSpeaking, setUltronSpeaking] = useState(false);
+  const ultronSpeakTimerRef = useRef<number | null>(null);
+  // Avatar face: listening while the mic hears Pranav, speaking while
+  // Ultron's reply is being spoken aloud, idle otherwise.
+  const ultronAvatarState: AvatarState = ultronListening ? 'listening' : ultronSpeaking ? 'speaking' : 'idle';
   const [notifState, setNotifState] = useState('unknown');
   const [installEvt, setInstallEvt] = useState<unknown>(null);
   const [dataSource, setDataSource] = useState<'local' | 'supabase'>('local');
@@ -56,10 +63,23 @@ export default function Home() {
     }
   }, []);
   useEffect(() => { if (loaded) { localStorage.setItem(STORE_KEY, JSON.stringify(data)); debouncedSaveToSupabase(data); } }, [data, loaded]);
+  // Apple normal mode: --accent is white, no red anywhere. Ultron mode
+  // (sheet open): --accent/--accent2 switch to crimson/ember and the
+  // body gets .ultron-mode, so the red gradient + red buttons appear
+  // only while Ultron is open. The saved Profile theme never forces red.
   useEffect(() => {
-    document.documentElement.style.setProperty('--accent', THEMES[data.profile.museTheme].accent);
-    document.documentElement.style.setProperty('--accent2', THEMES[data.profile.museTheme].accent2);
-  }, [data.profile.museTheme]);
+    const root = document.documentElement;
+    if (ultronOpen) {
+      root.style.setProperty('--accent', '#e1061f');
+      root.style.setProperty('--accent2', '#ff6a1a');
+      document.body.classList.add('ultron-mode');
+    } else {
+      root.style.setProperty('--accent', '#f5f5f7');
+      root.style.setProperty('--accent2', '#a1a1aa');
+      document.body.classList.remove('ultron-mode');
+    }
+    return () => document.body.classList.remove('ultron-mode');
+  }, [ultronOpen]);
   useEffect(() => {
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
     if ('Notification' in window) setNotifState(Notification.permission);
@@ -234,7 +254,30 @@ export default function Home() {
     if (!items.length) { setToast('No open tasks for today to read out.'); return; }
     listen(items.map((t) => taskSpeechText(t)).join(' '), 'today');
   }
-  function ultronReply(text: string) { setUltronMsgs((m) => [...m, { role: 'ultron', text }]); }
+  // Speak an Ultron reply aloud (only when Voice reminders is ON).
+  // Honest note: speechSynthesis gives NO phoneme data, so the avatar's
+  // mouth moves in a rhythm timed to the spoken reply — it is NOT true
+  // phoneme lip-sync.
+  function speakUltron(text: string) {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    if (!data.settings.voiceReminders) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = data.settings.voiceLang;
+    const v = pickVoice(data.settings.voiceLang);
+    if (v) u.voice = v;
+    u.onstart = () => setUltronSpeaking(true);
+    u.onend = () => setUltronSpeaking(false);
+    u.onerror = () => setUltronSpeaking(false);
+    setUltronSpeaking(true);
+    window.speechSynthesis.speak(u);
+    // Safety net: never leave the mouth moving if onend never fires.
+    // Cleared when a new reply starts, so a fast second reply is not
+    // cut short by the previous reply's timer.
+    if (ultronSpeakTimerRef.current) clearTimeout(ultronSpeakTimerRef.current);
+    ultronSpeakTimerRef.current = window.setTimeout(() => setUltronSpeaking(false), Math.min(60000, Math.max(4000, text.length * 90)));
+  }
+  function ultronReply(text: string) { setUltronMsgs((m) => [...m, { role: 'ultron', text }]); speakUltron(text); }
   function handleUltronSend(raw: string) {
     const text = raw.trim(); if (!text) return;
     setUltronMsgs((m) => [...m, { role: 'user', text }]); setUltronInput('');
@@ -347,6 +390,7 @@ export default function Home() {
     rec.continuous = false; rec.interimResults = true; rec.lang = data.settings.voiceLang;
     rec.onresult = (e) => { let txt = ''; for (let i = 0; i < e.results.length; i++) txt += e.results[i][0].transcript; setUltronInput(txt); };
     rec.onerror = () => setUltronListening(false); rec.onend = () => setUltronListening(false);
+    stopSpeaking(); setUltronSpeaking(false);
     rec.start(); setUltronListening(true);
   }
   const projectName = (id: number | null) => data.projects.find((p) => p.id === id)?.name || 'No project';
@@ -384,9 +428,9 @@ export default function Home() {
         <span className={`pill ${t.priority}`}>{t.priority === 'high_alert' ? 'High alert' : t.priority}</span>
       </div>
       <div className="row" style={{ marginTop: 8 }}>
-        <button className="btn ghost small" onClick={() => listen(taskSpeechText(t), `task-${t.id}`)}>{speaking === `task-${t.id}` ? '⏹ Stop' : '🔊 Listen'}</button>
-        <button className="btn ghost small" onClick={() => openEditTask(t)}>Edit</button>
-        <button className="btn ghost small" onClick={() => save((d) => ({ ...d, tasks: d.tasks.filter((x) => x.id !== t.id) }))}>Delete</button>
+        <button className="btn ghost small" onClick={() => listen(taskSpeechText(t), `task-${t.id}`)}>{speaking === `task-${t.id}` ? <><Square size={14} /> Stop</> : <><Volume2 size={14} /> Listen</>}</button>
+        <button className="btn ghost small" onClick={() => openEditTask(t)}><Pencil size={14} /> Edit</button>
+        <button className="btn ghost small" onClick={() => save((d) => ({ ...d, tasks: d.tasks.filter((x) => x.id !== t.id) }))}><Trash2 size={14} /> Delete</button>
       </div>
     </div>
   );
@@ -394,8 +438,8 @@ export default function Home() {
   return (
     <div className="wrap">
       <div className="topbar">
-        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search tasks…" aria-label="Search tasks" />
-        <button className="btn ghost small" onClick={() => setView('reminders')}>🔔 {reminders.length}</button>
+        <div className="searchwrap"><Search size={18} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search tasks…" aria-label="Search tasks" /></div>
+        <button className="btn ghost small iconbtn" onClick={() => setView('reminders')} aria-label="Reminders"><Bell size={18} /> {reminders.length}</button>
       </div>
       <h1 style={{ margin: '4px 0' }}>Task Reminder App</h1>
       <p className="muted">Hey {data.profile.name || 'Pranav'} — {todayTasks.length} open for today · {doneToday} done overall</p>
@@ -403,17 +447,17 @@ export default function Home() {
       {view === 'today' && (
         <div>
           <div className="glass card">
-            <div className="row"><strong>🎙 Say a task</strong><span className="muted">Tap the mic, speak, then Understand my task</span></div>
+            <div className="row"><strong style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Mic size={18} /> Say a task</strong><span className="muted">Tap the mic, speak, then Understand my task</span></div>
             <div style={{ textAlign: 'center', padding: 12 }}>
-              <button className={`mic ${listening ? 'listening' : ''}`} onClick={() => { setVoiceOpen(true); startListening(); }} aria-label="Say a task">🎙</button>
+              <button className={`mic ${listening ? 'listening' : ''}`} onClick={() => { setVoiceOpen(true); startListening(); }} aria-label="Say a task"><Mic size={30} /></button>
             </div>
             <div className="row" style={{ justifyContent: 'center' }}>
-              <button className="btn ghost" style={{ borderRadius: '50%', width: 44, height: 44, padding: 0, fontSize: 20 }} onClick={listenToday} aria-label="Read today's tasks aloud" title="Read today's tasks aloud">{speaking === 'today' ? '⏹' : '🔊'}</button>
-              <button className="btn ghost" onClick={openNewTask}>+ Add task</button>
+              <button className="btn ghost iconbtn" style={{ borderRadius: '50%', width: 44, height: 44, padding: 0 }} onClick={listenToday} aria-label="Read today's tasks aloud" title="Read today's tasks aloud">{speaking === 'today' ? <Square size={18} /> : <Volume2 size={18} />}</button>
+              <button className="btn ghost" onClick={openNewTask}><Plus size={18} /> Add task</button>
             </div>
             <div className="row" style={{ justifyContent: 'center', marginTop: 8 }}>
               <span className="muted">Voice: </span>
-              {LANGS.map((l) => <button key={l.v} className="btn ghost small" style={{ background: data.settings.voiceLang === l.v ? 'var(--accent)' : undefined }} onClick={() => save((d) => ({ ...d, settings: { ...d.settings, voiceLang: l.v } }))}>{l.l}</button>)}
+              {LANGS.map((l) => <button key={l.v} className="btn ghost small" style={{ background: data.settings.voiceLang === l.v ? 'var(--accent)' : undefined, color: data.settings.voiceLang === l.v ? '#000' : undefined }} onClick={() => save((d) => ({ ...d, settings: { ...d.settings, voiceLang: l.v } }))}>{l.l}</button>)}
             </div>
           </div>
           <h3>Today</h3>
@@ -422,14 +466,14 @@ export default function Home() {
           {data.projects.map((p) => (
             <div key={p.id} className="glass card"><div className="row"><span style={{ width: 12, height: 12, borderRadius: '50%', background: p.color }} /> <strong>{p.name}</strong> <span className={`pill ${p.priority}`}>{p.priority}</span></div><div className="muted">{p.description}</div><div className="muted">{data.tasks.filter((t) => t.projectId === p.id && t.status === 'todo').length} open tasks</div></div>
           ))}
-          <button className="btn ghost" onClick={() => setShowProjectForm(true)}>+ Add project</button>
+          <button className="btn ghost" onClick={() => setShowProjectForm(true)}><Plus size={18} /> Add project</button>
         </div>
       )}
 
       {view === 'schedule' && (
         <div>
           <h3>Scheduled tasks</h3>
-          <div className="row">{(['monthly', 'weekly', 'daily'] as const).map((t) => <button key={t} className="btn small" style={{ background: schedTab === t ? 'var(--accent)' : 'rgba(255,255,255,.14)' }} onClick={() => setSchedTab(t)}>{t[0].toUpperCase() + t.slice(1)}</button>)}</div>
+          <div className="segmented">{(['monthly', 'weekly', 'daily'] as const).map((t) => <button key={t} className={schedTab === t ? 'active' : ''} onClick={() => setSchedTab(t)}>{t[0].toUpperCase() + t.slice(1)}</button>)}</div>
           {schedList.length ? schedList.map(taskRow) : <p className="muted">No {schedTab} tasks.</p>}
         </div>
       )}
@@ -437,7 +481,7 @@ export default function Home() {
       {view === 'calendar' && (
         <div>
           <h3>Calendar</h3>
-          <div className="row"><button className="btn ghost small" onClick={() => setCalMonth(addDaysStr(calMonth + '-01', -30).slice(0, 7))}>‹ Prev</button><strong>{calMonth}</strong><button className="btn ghost small" onClick={() => setCalMonth(addDaysStr(calMonth + '-01', 30).slice(0, 7))}>Next ›</button></div>
+          <div className="row"><button className="btn ghost small iconbtn" onClick={() => setCalMonth(addDaysStr(calMonth + '-01', -30).slice(0, 7))}><ChevronLeft size={16} /> Prev</button><strong>{calMonth}</strong><button className="btn ghost small iconbtn" onClick={() => setCalMonth(addDaysStr(calMonth + '-01', 30).slice(0, 7))}>Next <ChevronRight size={16} /></button></div>
           <p className="muted">Past dates: green = all done · red = remaining · yellow = half done</p>
           <div className="cal">{calCells.map((d, i) => d ? <div key={d} className={`calcell ${calStatus(d)}`}>{Number(d.slice(8))}<br /><span>{data.tasks.filter((t) => t.dueDate === d).length || ''}</span></div> : <div key={i} />)}</div>
         </div>
@@ -449,7 +493,7 @@ export default function Home() {
           {reminders.length ? reminders.map((r) => (
             <div key={r.key} className="glass card"><strong>{r.kind}</strong><div>{r.text}</div>
               <div className="row" style={{ marginTop: 8, flexWrap: 'wrap' }}>
-                <button className="btn ghost small" onClick={() => listen(taskSpeechText(r.task), `rem-${r.key}`)}>🔊 Listen</button>
+                <button className="btn ghost small" onClick={() => listen(taskSpeechText(r.task), `rem-${r.key}`)}><Volume2 size={14} /> Listen</button>
                 <button className="btn ghost small" onClick={() => snoozeTask(r.task, 'hour')}>Snooze 1h</button>
                 <button className="btn ghost small" onClick={() => snoozeTask(r.task, 'evening')}>This evening</button>
                 <button className="btn ghost small" onClick={() => snoozeTask(r.task, 'morning')}>Tomorrow morning</button>
@@ -509,8 +553,8 @@ export default function Home() {
       )}
       {voiceOpen && (
         <div className="glass card"><h3>Say a task</h3>
-          <div className="field" style={{ minHeight: 60, background: '#fff' }}>{transcript || 'Tap the mic and speak…'}</div>
-          <div className="row"><button className={`mic ${listening ? 'listening' : ''}`} style={{ width: 56, height: 56, fontSize: 24 }} onClick={() => (listening ? stopListening() : startListening())}>🎙</button>
+          <div className="field" style={{ minHeight: 60 }}>{transcript || 'Tap the mic and speak…'}</div>
+          <div className="row"><button className={`mic ${listening ? 'listening' : ''}`} style={{ width: 56, height: 56 }} onClick={() => (listening ? stopListening() : startListening())}><Mic size={24} /></button>
           <button className="btn" onClick={understandTask}>Understand my task</button><button className="btn ghost" onClick={() => { stopListening(); setVoiceOpen(false); }}>Close</button></div>
           {draft && <div style={{ marginTop: 10 }}>
             <input className="field" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
@@ -524,23 +568,29 @@ export default function Home() {
       )}
       {toast && <div className="glass toast">{toast}<div style={{ textAlign: 'right' }}><button className="btn ghost small" onClick={() => setToast(null)}>OK</button></div></div>}
       <nav className="nav">
-        <button className={view === 'today' ? 'active' : ''} onClick={() => setView('today')}>🏠<br />Home</button>
-        <button className={view === 'schedule' ? 'active' : ''} onClick={() => setView('schedule')}>📅<br />Schedule</button>
-        <button onClick={() => setUltronOpen(true)} aria-label="Ultron assistant" title="Ultron — your AI assistant" style={{ color: '#fff' }}><span style={{ display: 'inline-block', width: 48, height: 48, lineHeight: '48px', borderRadius: '50%', background: 'radial-gradient(circle at 35% 30%, var(--accent2), var(--accent))', fontSize: 22, boxShadow: '0 0 0 5px rgba(255,255,255,.15)' }}>🤖</span><br />Ultron</button>
-        <button className={view === 'calendar' ? 'active' : ''} onClick={() => setView('calendar')}>🗓<br />Calendar</button>
-        <button className={view === 'reminders' ? 'active' : ''} onClick={() => setView('reminders')}>🔔<br />Reminders</button>
-        <button className={view === 'profile' ? 'active' : ''} onClick={() => setView('profile')}>👤<br />Profile</button>
+        <button className={view === 'today' ? 'active' : ''} onClick={() => setView('today')}><HomeIcon size={22} />Home</button>
+        <button className={view === 'schedule' ? 'active' : ''} onClick={() => setView('schedule')}><CalendarDays size={22} />Schedule</button>
+        <button onClick={() => setUltronOpen(true)} aria-label="Ultron assistant" title="Ultron — your AI assistant" style={{ color: '#fff', display: 'flex', flexDirection: 'column', alignItems: 'center' }}><Avatar size="md" color="blue" state="idle" />Ultron</button>
+        <button className={view === 'calendar' ? 'active' : ''} onClick={() => setView('calendar')}><Calendar size={22} />Calendar</button>
+        <button className={view === 'reminders' ? 'active' : ''} onClick={() => setView('reminders')}><Bell size={22} />Reminders</button>
+        <button className={view === 'profile' ? 'active' : ''} onClick={() => setView('profile')}><User size={22} />Profile</button>
       </nav>
       {ultronOpen && (
-        <div className="glass card" style={{ position: 'fixed', left: 12, right: 12, bottom: 86, zIndex: 50, maxHeight: '62vh', display: 'flex', flexDirection: 'column' }}>
-          <div className="row"><strong>🤖 Ultron</strong><span className="muted">Your AI assistant — warm, calm, precise. I only use your real tasks.</span><button className="btn ghost small" style={{ marginLeft: 'auto' }} onClick={() => setUltronOpen(false)}>Close</button></div>
+        <div className="glass card ultron-sheet" style={{ position: 'fixed', left: 12, right: 12, bottom: 86, zIndex: 50, maxHeight: '62vh', display: 'flex', flexDirection: 'column' }}>
+          <div className="row"><strong>Ultron</strong><span className="muted">Your AI assistant — warm, calm, precise. I only use your real tasks.</span><button className="btn ghost small iconbtn" style={{ marginLeft: 'auto' }} onClick={() => { stopSpeaking(); setUltronSpeaking(false); setUltronOpen(false); }}><X size={16} /> Close</button></div>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 10 }}>
+            <Avatar size="xl" color="blue" state={ultronAvatarState} onClick={ultronMic} />
+            <div className="muted" style={{ marginTop: 8, textAlign: 'center' }}>
+              {ultronListening ? 'Listening… I am hearing you.' : ultronSpeaking ? 'Speaking…' : 'Tap Ultron to talk, or type below.'}
+            </div>
+          </div>
           <div style={{ overflowY: 'auto', flex: 1, marginTop: 8 }}>
             {ultronMsgs.map((m, i) => <div key={i} style={{ margin: '8px 0', textAlign: m.role === 'user' ? 'right' : 'left' }}><span style={{ display: 'inline-block', padding: '8px 12px', borderRadius: 14, background: m.role === 'user' ? 'var(--accent)' : 'rgba(255,255,255,.14)', color: '#fff', maxWidth: '88%' }}>{m.text}</span></div>)}
           </div>
           <div className="row" style={{ marginTop: 8 }}>
-            <button className="btn ghost small" onClick={ultronMic} aria-label="Speak to Ultron">{ultronListening ? '● Listening…' : '🎙'}</button>
+            <button className="btn ghost small iconbtn" onClick={ultronMic} aria-label="Speak to Ultron">{ultronListening ? 'Listening…' : <Mic size={18} />}</button>
             <input className="field" style={{ flex: 1, margin: 0 }} value={ultronInput} onChange={(e) => setUltronInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleUltronSend(ultronInput); }} placeholder="Talk to Ultron — English, Hinglish, Hindi or Marathi…" />
-            <button className="btn small" onClick={() => handleUltronSend(ultronInput)}>Send</button>
+            <button className="btn small" onClick={() => handleUltronSend(ultronInput)}><Send size={16} /> Send</button>
           </div>
           <div className="muted" style={{ marginTop: 6 }}>Try: “what's my week look like?” · “what's overdue?” · “how am I doing?” · “remind me at 2pm with a voice reminder” · “mark Wake up done”</div>
           {data.ultronReminders.filter((r) => !r.fired).length > 0 && <div className="muted" style={{ marginTop: 6 }}>Scheduled voice reminders: {data.ultronReminders.filter((r) => !r.fired).map((r) => `“${r.title}” ${r.date} ${r.time}`).join(' · ')}</div>}
