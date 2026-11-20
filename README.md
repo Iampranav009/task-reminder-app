@@ -57,27 +57,24 @@ no install prompt.
   **2 hours before** a task is due, friendly voice reminders on, voice
   language English. It asks for Notification permission and explains
   the limit below.
-- **Data** — by default everything is stored in the browser's
-  `localStorage` (`task-reminder-standalone-v1`). When Supabase is
-  configured (see below), tasks/projects/reminders also sync to
-  Supabase, so they are not only on the phone. No account, no server
-  of our own.
+- **Data** — everything lives ONLY in Supabase (cloud). Nothing is
+  saved on the phone — no localStorage at all. In-memory state only
+  while the app runs; every change is saved to Supabase.
 
-## Data: Supabase (cloud) or localStorage (phone only)
+## Data: Supabase only (no local storage)
 
-Pranav's rule: **do not save tasks/memory only on the phone** — phone
-storage is not optimised for that much data. So Supabase is the
-backend when it is configured, and localStorage is only the offline
-fallback.
+Pranav's rule: **do not save tasks/memory on the phone at all** —
+phone storage is not optimised for that much data. Supabase is the
+only store. There is no localStorage in the app any more.
 
 **Where data lives in each mode:**
 - **Supabase configured:** on app start the app loads projects,
   tasks, Ultron reminders, settings and profile from Supabase, and
-  every change is saved there (debounced, ~800 ms) as well as to
-  localStorage. localStorage stays as an offline cache.
-- **Supabase NOT configured:** everything lives only in the phone's
-  localStorage, exactly as before. The app still works offline, and
-  the Settings screen says “saved only on this phone”.
+  every change is saved there (debounced, ~800 ms). Nothing is
+  written to the phone.
+- **Supabase NOT configured:** the app shows "Supabase is NOT
+  connected" in Profile, data lives only in memory for that session
+  and is lost when the app closes. Nothing is silently saved locally.
 
 **Set it up (no real keys in this repo — placeholders only):**
 1. Create a free project at [supabase.com](https://supabase.com).
@@ -96,9 +93,9 @@ fallback.
 5. For the GitHub Actions APK build, add the same two values as
    GitHub repo secrets named `NEXT_PUBLIC_SUPABASE_URL` and
    `NEXT_PUBLIC_SUPABASE_ANON_KEY` (Settings → Secrets and variables
-   → Actions). The workflow passes them to the build; if they are
-   absent, the build still passes and the APK falls back to
-   localStorage only.
+   → Actions). The workflow passes them to the build; **without these
+   secrets the APK cannot use Supabase at all** — it will show
+   "Supabase is NOT connected" and keep data only in memory.
 
 **v1 security note:** RLS is ON, but the policy allows the anon key
 full access so the single-user app works without login. Proper
@@ -177,12 +174,13 @@ app opens or when you tap the notification.
 ## Files
 
 - `app/` — Next.js App Router (`layout.tsx`, `page.tsx`, `globals.css`)
-- `src/lib/core.ts` — types, seed data, localStorage, voice parsing,
-  speech helpers
+- `src/lib/core.ts` — types, seed data, voice parsing,
+  speech helpers (async Web Speech voices)
 - `src/lib/native.ts` — Capacitor bridge: scheduled local
-  notifications on Android (no-op on web)
+  notifications on Android (no-op on web), native text-to-speech
+  via @capacitor-community/text-to-speech
 - `src/lib/supabase.ts` — Supabase client + sync layer
-  (load from / save to Supabase, debounced; localStorage fallback)
+  (load from / save to Supabase, debounced; Supabase is the only store)
 - `supabase/migrations/001_init.sql` + `002_priority_very_normal.sql` — Postgres schema for
   `projects`, `tasks`, `ultron_reminders`, `app_settings` (+ RLS). Run 002 as well if 001 was already applied.
 - `android/` — Capacitor Android project (app id
