@@ -1,0 +1,12 @@
+{
+	"appId": "com.pranav.taskreminder",
+	"appName": "Task Reminder",
+	"webDir": "out",
+	"backgroundColor": "#0b1220",
+	"android": {
+		"allowMixedContent": false
+	},
+	"server": {
+		"cleartext": false
+	}
+}
