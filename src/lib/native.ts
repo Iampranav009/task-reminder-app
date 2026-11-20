@@ -91,6 +91,55 @@ export async function requestNativeNotificationPermission(): Promise<boolean> {
   }
 }
 
+export type MicPermissionState = 'granted' | 'denied' | 'prompt' | 'unknown';
+
+/**
+ * Microphone permission, the two gates Android needs before the WebView
+ * can hear Pranav (see MainActivity.java):
+ *  1. App gate — RECORD_AUDIO declared in AndroidManifest.xml and
+ *     granted at runtime. Without it Android never lists Microphone in
+ *     Settings > Apps > Task Reminder > Permissions.
+ *  2. WebView gate — the page's AUDIO_CAPTURE request granted in
+ *     WebChromeClient.onPermissionRequest (Capacitor's
+ *     BridgeWebChromeClient, subclassed in MainActivity).
+ *
+ * SpeechRecognition on its own does NOT reliably fire gate 2 in a
+ * WebView — it just fails with not-allowed and closes after ~1 second.
+ * A short getUserMedia({ audio: true }) warm-up DOES fire it, so
+ * requestMicrophonePermission() below is called before any
+ * SpeechRecognition session starts, and from the Settings button.
+ * The stream is stopped immediately; it only exists to trigger the
+ * permission prompt.
+ */
+export async function checkMicrophonePermission(): Promise<MicPermissionState> {
+  try {
+    const nav = navigator as Navigator & {
+      permissions?: { query: (o: { name: string }) => Promise<{ state: string }> };
+    };
+    if (!nav.permissions?.query) return 'unknown';
+    const res = await nav.permissions.query({ name: 'microphone' });
+    if (res.state === 'granted' || res.state === 'denied' || res.state === 'prompt') {
+      return res.state;
+    }
+    return 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+/** Trigger the Android mic prompt (via getUserMedia) and return true if granted. */
+export async function requestMicrophonePermission(): Promise<boolean> {
+  try {
+    const media = navigator.mediaDevices;
+    if (!media?.getUserMedia) return false;
+    const stream = await media.getUserMedia({ audio: true });
+    stream.getTracks().forEach((t) => t.stop());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function ensureChannel(): Promise<void> {
   const ln = await getLocalNotifications();
   if (!ln) return;

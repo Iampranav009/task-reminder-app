@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AppData, MuseTheme, Priority, Project, Settings, Task, THEMES, UltronReminder, VOICE_KEYWORDS, findTaskByWords, loadData, parseTimeOfDay, parseVoiceTask, pickVoice, seedData, speakText, stopSpeaking, STORE_KEY, taskSpeechText, todayStr, addDaysStr } from '../src/lib/core';
-import { checkNativeNotificationPermission, isNativeApp, requestNativeNotificationPermission, rescheduleNativeReminders, sendTestNativeNotification, type NativeReminder } from '../src/lib/native';
+import { checkMicrophonePermission, checkNativeNotificationPermission, isNativeApp, requestMicrophonePermission, requestNativeNotificationPermission, rescheduleNativeReminders, sendTestNativeNotification, type NativeReminder } from '../src/lib/native';
 import { debouncedSaveToSupabase, loadFromSupabase, supabaseConfigured } from '../src/lib/supabase';
 import Avatar, { type AvatarState } from '@/components/ui/components-primitives-avatar';
 import { Bell, Calendar, CalendarDays, ChevronLeft, ChevronRight, Home as HomeIcon, Mic, Pencil, Plus, Search, Send, Square, Trash2, User, Volume2, X } from 'lucide-react';
@@ -40,6 +40,9 @@ export default function Home() {
   // Ultron's reply is being spoken aloud, idle otherwise.
   const ultronAvatarState: AvatarState = ultronListening ? 'listening' : ultronSpeaking ? 'speaking' : 'idle';
   const [notifState, setNotifState] = useState('unknown');
+  // Microphone permission, shown in Profile > Settings next to Notifications.
+  // 'granted' | 'denied' | 'prompt' (not asked yet) | 'unknown'.
+  const [micState, setMicState] = useState('unknown');
   const [dataSource, setDataSource] = useState<'local' | 'supabase'>('local');
   const recogRef = useRef<unknown>(null);
 
@@ -92,6 +95,9 @@ export default function Home() {
       } else if ('Notification' in window) {
         setNotifState(Notification.permission);
       }
+      // Microphone: navigator.permissions in the WebView reports the
+      // real RECORD_AUDIO state once the manifest declares it.
+      setMicState(await checkMicrophonePermission());
     })();
     return () => {
       voiceSessionRef.current = false;
@@ -229,6 +235,22 @@ export default function Home() {
       return;
     }
     if ('Notification' in window) setNotifState(Notification.permission);
+  }
+  async function checkMicStatus() {
+    setMicState(await checkMicrophonePermission());
+  }
+  async function askMicrophone() {
+    // The getUserMedia warm-up triggers Android's system prompt
+    // ("Allow Task Reminder to record audio?") via MainActivity's
+    // WebChromeClient. If the user taps Allow, Microphone then appears
+    // under Allowed in Android Settings > Apps > Task Reminder.
+    const ok = await requestMicrophonePermission();
+    setMicState(ok ? 'granted' : await checkMicrophonePermission());
+    if (ok) {
+      setToast('Microphone on — tap Ultron and speak, I will keep listening until you tap Stop.');
+    } else {
+      setToast('Microphone was not allowed. Go to Android Settings > Apps > Task Reminder > Permissions > Microphone > Allow — no need to reinstall — then tap Re-check.');
+    }
   }
   async function sendTestNotification() {
     if (isNativeApp()) {
@@ -402,11 +424,23 @@ export default function Home() {
     (recogRef.current as { stop?: () => void } | null)?.stop?.();
     setUltronListening(false);
   }
-  function ultronMic() {
+  async function ultronMic() {
     // Tap again while listening = Stop. The mic stays on until Stop is tapped.
     if (ultronListening) { stopUltronListening(); return; }
     const SR = (window as unknown as { SpeechRecognition?: new () => unknown; webkitSpeechRecognition?: new () => unknown }).SpeechRecognition || (window as unknown as { webkitSpeechRecognition?: new () => unknown }).webkitSpeechRecognition;
     if (!SR) { setToast('Voice is not supported in this browser. You can type to Ultron instead.'); return; }
+    // Warm up the mic FIRST: SpeechRecognition on its own does not
+    // reliably fire the WebView permission request in Android — it
+    // just fails with not-allowed and closes after ~1 second. A short
+    // getUserMedia call does fire it, so Android shows the system
+    // "Allow Task Reminder to record audio?" prompt (via MainActivity)
+    // and only then do we start listening.
+    if (!(await requestMicrophonePermission())) {
+      setMicState('denied');
+      setMicHint('Microphone permission is blocked. Allow the mic in Android Settings > Apps > Task Reminder > Permissions > Microphone, then tap the mic again. No need to reinstall.');
+      return;
+    }
+    setMicState('granted');
     const rec = new SR() as { continuous: boolean; interimResults: boolean; lang: string; onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null; onerror: ((e: { error?: string }) => void) | null; onend: (() => void) | null; start: () => void; stop: () => void };
     rec.continuous = true; rec.interimResults = true; rec.lang = data.settings.voiceLang;
     ultronSessionRef.current = true;
@@ -422,7 +456,8 @@ export default function Home() {
       if (err === 'not-allowed' || err === 'service-not-allowed') {
         ultronSessionRef.current = false;
         setUltronListening(false);
-        setMicHint('Microphone permission is blocked. Allow the mic in Android Settings > Apps > Task Reminder > Permissions > Microphone, then tap the mic again.');
+        setMicState('denied');
+        setMicHint('Microphone permission is blocked. Allow the mic in Android Settings > Apps > Task Reminder > Permissions > Microphone, then tap the mic again. No need to reinstall.');
       } else if (err === 'no-speech') {
         setMicHint('No speech heard yet — I am still listening, keep talking.');
       }
@@ -570,6 +605,14 @@ export default function Home() {
               <div className="row" style={{ flexWrap: 'wrap' }}>
                 <button className="btn small" onClick={askNotifications}>{notifState === 'granted' ? 'Send test notification' : 'Allow notifications'}</button>
                 {notifState !== 'granted' && <button className="btn ghost small" onClick={checkNotifStatus}>Re-check permission</button>}
+              </div>
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <div className="row"><strong>Microphone</strong><span className={`pill ${micState === 'granted' ? 'normal' : micState === 'denied' ? 'high_alert' : 'very_normal'}`}>{micState === 'granted' ? 'Allowed' : micState === 'denied' ? 'Blocked' : micState === 'prompt' ? 'Not asked yet' : 'Unknown'}</span></div>
+              <p className="muted">Permission: {micState}.{micState === 'denied' ? ' Blocked — go to Android Settings > Apps > Task Reminder > Permissions > Microphone > Allow (no need to reinstall), then tap Re-check.' : micState === 'granted' ? ' Ultron will hear you — tap the mic and speak, it stays listening until you tap Stop.' : ' Tap Allow microphone and accept the Android permission prompt. Without this, the mic closes after about 1 second.'}</p>
+              <div className="row" style={{ flexWrap: 'wrap' }}>
+                <button className="btn small" onClick={askMicrophone}>{micState === 'granted' ? 'Test microphone' : 'Allow microphone'}</button>
+                {micState !== 'granted' && <button className="btn ghost small" onClick={checkMicStatus}>Re-check permission</button>}
               </div>
             </div>
             <p className="muted">Data: {dataSource === 'supabase' ? 'saved in Supabase (cloud) and on this phone' : 'saved only on this phone (localStorage) — set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to sync to Supabase. See README.'}</p>

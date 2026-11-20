@@ -38,6 +38,18 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Microphone: REQUIRED for Ultron voice capture (Web Speech
+         Recognition in the WebView). Without this line Android never
+         lists Microphone in Settings > Apps > Task Reminder >
+         Permissions, and the WebView silently denies the mic — which
+         is why recognition closed after ~1 second with not-allowed. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Capacitor's BridgeWebChromeClient answers a WebView AUDIO_CAPTURE
+         request by asking Android for BOTH RECORD_AUDIO and
+         MODIFY_AUDIO_SETTINGS, and grants getUserMedia / SpeechRecognition
+         only if every one comes back granted. An undeclared permission is
+         refused without a prompt, so both lines are needed. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <!-- Needed for scheduled reminders to show when the app is closed. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Lets Android deliver reminders at the exact time (2 hours before due, or the Ultron time). -->
