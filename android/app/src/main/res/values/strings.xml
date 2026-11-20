@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Task Reminder</string>
+    <string name="title_activity_main">Task Reminder</string>
+    <string name="package_name">com.pranav.taskreminder</string>
+    <string name="custom_url_scheme">com.pranav.taskreminder</string>
+</resources>
