@@ -1,6 +1,8 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AppData, MuseTheme, Priority, Project, Settings, Task, THEMES, UltronReminder, VOICE_KEYWORDS, findTaskByWords, loadData, parseTimeOfDay, parseVoiceTask, pickVoice, seedData, speakText, stopSpeaking, STORE_KEY, taskSpeechText, todayStr, addDaysStr } from '../src/lib/core';
+import { isNativeApp, requestNativeNotificationPermission, rescheduleNativeReminders, type NativeReminder } from '../src/lib/native';
+import { debouncedSaveToSupabase, loadFromSupabase, supabaseConfigured } from '../src/lib/supabase';
 
 type View = 'today' | 'schedule' | 'calendar' | 'reminders' | 'profile';
 const LANGS = [{ v: 'en-IN', l: 'English' }, { v: 'hi-IN', l: 'हिन्दी · Hindi' }, { v: 'mr-IN', l: 'मराठी · Marathi' }] as const;
@@ -24,15 +26,36 @@ export default function Home() {
   const [speaking, setSpeaking] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [ultronOpen, setUltronOpen] = useState(false);
-  const [ultronMsgs, setUltronMsgs] = useState<{ role: 'user' | 'ultron'; text: string }[]>([{ role: 'ultron', text: 'Good to see you, Pranav. I am Ultron — the main brain of this app. I know your tasks, projects and deadlines. Ask me to list today, create a task, mark one done, move one, or say “remind me at 2pm with a voice reminder” and I will schedule it.' }]);
+  const [ultronMsgs, setUltronMsgs] = useState<{ role: 'user' | 'ultron'; text: string }[]>([{ role: 'ultron', text: 'Good to see you, Pranav. I am Ultron — the main brain of this app. I know your tasks, projects and deadlines. Ask me about your day or your week, what is overdue, how you are doing, or say “remind me at 2pm with a voice reminder” and I will schedule it.' }]);
   const [ultronInput, setUltronInput] = useState('');
   const [ultronListening, setUltronListening] = useState(false);
   const [notifState, setNotifState] = useState('unknown');
   const [installEvt, setInstallEvt] = useState<unknown>(null);
+  const [dataSource, setDataSource] = useState<'local' | 'supabase'>('local');
   const recogRef = useRef<unknown>(null);
 
-  useEffect(() => { setData(loadData()); setLoaded(true); }, []);
-  useEffect(() => { if (loaded) localStorage.setItem(STORE_KEY, JSON.stringify(data)); }, [data, loaded]);
+  useEffect(() => {
+    const local = loadData();
+    setData(local);
+    setLoaded(true);
+    // Supabase is the source of truth when configured; localStorage is
+    // the offline fallback. Never crashes when env vars are missing.
+    if (supabaseConfigured()) {
+      loadFromSupabase().then((remote) => {
+        if (!remote) return;
+        setData((d) => ({
+          ...d,
+          ...(remote.projects?.length ? { projects: remote.projects } : {}),
+          ...(remote.tasks?.length ? { tasks: remote.tasks } : {}),
+          ...(remote.ultronReminders ? { ultronReminders: remote.ultronReminders } : {}),
+          ...(remote.settings ? { settings: { ...d.settings, ...remote.settings } } : {}),
+          ...(remote.profile ? { profile: { ...d.profile, ...remote.profile } } : {}),
+        }));
+        setDataSource('supabase');
+      }).catch(() => {});
+    }
+  }, []);
+  useEffect(() => { if (loaded) { localStorage.setItem(STORE_KEY, JSON.stringify(data)); debouncedSaveToSupabase(data); } }, [data, loaded]);
   useEffect(() => {
     document.documentElement.style.setProperty('--accent', THEMES[data.profile.museTheme].accent);
     document.documentElement.style.setProperty('--accent2', THEMES[data.profile.museTheme].accent2);
@@ -90,6 +113,31 @@ export default function Home() {
   }, [loaded, data.tasks, data.settings, data.profile.name, data.ultronReminders]);
 
   const save = (fn: (d: AppData) => AppData) => setData((d) => fn(d));
+
+  // Native Android: hand upcoming reminders to the device's AlarmManager
+  // via Capacitor LocalNotifications, so they fire even when the app is
+  // closed. No-op on the web / PWA (isNativeApp() is false there).
+  // Re-schedules only when the list of upcoming reminders actually changes.
+  const nativeSigRef = useRef('');
+  useEffect(() => {
+    if (!loaded || !isNativeApp()) return;
+    if (!data.settings.backgroundReminders || !data.settings.notificationsEnabled) return;
+    const now = Date.now();
+    const list: NativeReminder[] = [];
+    const lead = data.settings.reminderMinutesBefore * 60 * 1000;
+    for (const t of data.tasks.filter((x) => x.status === 'todo' && x.dueDate && x.dueTime)) {
+      const at = new Date(`${t.dueDate}T${t.dueTime}:00`).getTime() - lead;
+      if (at > now) list.push({ id: t.id, title: 'Task Reminder', body: `Hey ${data.profile.name || 'Pranav'}, “${t.title}” is due at ${t.dueTime}. Have you done it yet?`, at: new Date(at) });
+    }
+    for (const r of data.ultronReminders.filter((x) => !x.fired)) {
+      const at = new Date(`${r.date}T${r.time}:00`).getTime();
+      if (at > now) list.push({ id: 100000 + r.id, title: 'Ultron reminder', body: `Hey ${data.profile.name || 'Pranav'}, ${r.message}`, at: new Date(at) });
+    }
+    const sig = JSON.stringify(list.map((x) => [x.id, x.at.getTime()]));
+    if (sig === nativeSigRef.current) return;
+    nativeSigRef.current = sig;
+    rescheduleNativeReminders(list).catch(() => {});
+  }, [loaded, data.tasks, data.ultronReminders, data.settings, data.profile.name]);
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
     return data.tasks.filter((t) => !q || t.title.toLowerCase().includes(q) || t.notes.toLowerCase().includes(q));
@@ -142,6 +190,12 @@ export default function Home() {
     save((d) => ({ ...d, snoozedUntil: { ...d.snoozedUntil, [t.id]: until.toISOString() } }));
   }
   async function askNotifications() {
+    if (isNativeApp()) {
+      const ok = await requestNativeNotificationPermission();
+      setNotifState(ok ? 'granted' : 'denied');
+      setToast(ok ? 'Notifications on — on this Android app, reminders are scheduled on your phone, so they fire even when the app is closed.' : 'Notification permission was not granted. You can turn it on in Settings, or in Android Settings > Apps > Task Reminder > Notifications.');
+      return;
+    }
     if (!('Notification' in window)) { setToast('Notifications are not supported in this browser.'); return; }
     const p = await Notification.requestPermission(); setNotifState(p);
     if (p === 'granted') setToast('Notifications on — I will remind you 2 hours before a task is due, and again if you miss it.');
@@ -221,6 +275,51 @@ export default function Home() {
       ultronReply(`Created “${draft0.title}”${draft0.dueDate ? ` for ${draft0.dueDate}` : ''}${draft0.dueTime ? ` at ${draft0.dueTime}` : ''}. You can edit it from Home.`);
       return;
     }
+    // --- Summaries grounded in real data (never invented) ---
+    const fmt = (t: Task) => `“${t.title}”${t.dueTime ? ` at ${t.dueTime}` : ''}${t.dueDate && t.dueDate !== today ? ` on ${t.dueDate}` : ''}${t.priority === 'high_alert' ? ' (high alert)' : ''}`;
+    const overdue = open.filter((t) => t.dueDate && t.dueDate < today);
+    const doneCount = data.tasks.filter((t) => t.status === 'done').length;
+    // This week: today through 7 days ahead, plus daily tasks.
+    if (lower.includes('week') || lower.includes('this week') || lower.includes('next 7') || lower.includes('coming days')) {
+      const weekEnd = addDaysStr(today, 7);
+      const weekTasks = open.filter((t) => (t.dueDate && t.dueDate >= today && t.dueDate <= weekEnd) || t.kind === 'daily');
+      const byDay: Record<string, Task[]> = {};
+      for (const t of weekTasks) { const d = t.dueDate || today; (byDay[d] = byDay[d] || []).push(t); }
+      const days = Object.keys(byDay).sort();
+      if (!weekTasks.length) { ultronReply(`Your week looks clear, Pranav — no open tasks dated ${today} to ${weekEnd}, and nothing overdue. Want me to add something for this week?`); return; }
+      const lines = days.map((d) => `${d === today ? 'Today' : d}: ${byDay[d].map(fmt).join(', ')}`).join(' — ');
+      ultronReply(`Here is your week, ${today} to ${weekEnd}: ${weekTasks.length} open task${weekTasks.length > 1 ? 's' : ''}. ${lines}. ${overdue.length ? `${overdue.length} of those are already overdue — tackle those first. ` : ''}Want me to read the busiest day aloud, or set a reminder for one of them?`);
+      return;
+    }
+    // Tomorrow
+    if (lower.includes('tomorrow')) {
+      const tm = addDaysStr(today, 1);
+      const tmTasks = open.filter((t) => t.dueDate === tm || t.kind === 'daily');
+      if (!tmTasks.length) { ultronReply(`Nothing scheduled for tomorrow (${tm}) yet, Pranav. Want me to move something there, or create a task for tomorrow?`); return; }
+      ultronReply(`Tomorrow (${tm}) you have ${tmTasks.length} task${tmTasks.length > 1 ? 's' : ''}: ${tmTasks.map(fmt).join(', ')}. Want a reminder for any of them?`);
+      return;
+    }
+    // Progress / how am I doing
+    if (lower.includes('how am i') || lower.includes('how i am') || lower.includes('progress') || lower.includes('how many') || lower.includes('how much')) {
+      const pct = data.tasks.length ? Math.round((doneCount / data.tasks.length) * 100) : 0;
+      ultronReply(`You have done ${doneCount} of ${data.tasks.length} tasks in this app (${pct}%). ${open.length} still open, ${overdue.length} overdue, ${todayOpen.length} due today. Your busiest project is ${data.projects.map((p) => ({ p, n: open.filter((t) => t.projectId === p.id).length })).sort((a, b) => b.n - a.n)[0]?.p.name || 'none'} — want me to focus you on one task at a time?`);
+      return;
+    }
+    // What's next / most important
+    if (lower.includes('next') || lower.includes('first') || lower.includes('most important') || lower.includes('priority')) {
+      const sorted = [...open].sort((a, b) => (a.priority === 'high_alert' ? 0 : a.priority === 'high' ? 1 : 2) - (b.priority === 'high_alert' ? 0 : b.priority === 'high' ? 1 : 2) || (a.dueDate || '9999').localeCompare(b.dueDate || '9999'));
+      if (!sorted.length) { ultronReply('Nothing left open — you are done, Pranav.'); return; }
+      ultronReply(`Your most important next task is ${fmt(sorted[0])}. After that: ${sorted.slice(1, 3).map(fmt).join(', ') || 'nothing else scheduled'}. Want me to set a voice reminder for it?`);
+      return;
+    }
+    // A specific project
+    const namedProject = data.projects.find((p) => lower.includes(p.name.toLowerCase()));
+    if (namedProject && (lower.includes('project') || lower.includes('about') || lower.includes('how') || lower.includes('what'))) {
+      const pt = data.tasks.filter((t) => t.projectId === namedProject.id);
+      const po = pt.filter((t) => t.status === 'todo');
+      ultronReply(`${namedProject.name}: ${pt.length} task${pt.length === 1 ? '' : 's'} in total, ${po.length} still open${po.length ? ` — ${po.map(fmt).join(', ')}` : ''}. ${namedProject.description || ''}`);
+      return;
+    }
     if (lower.includes('today') || lower.includes('what') && lower.includes('do')) {
       if (!todayOpen.length) { ultronReply('Nothing open for today, Pranav. You are all caught up.'); return; }
       ultronReply(`Today you have ${todayOpen.length} open task${todayOpen.length > 1 ? 's' : ''}: ${todayOpen.map((t) => `“${t.title}”${t.dueTime ? ` at ${t.dueTime}` : ''}`).join(', ')}. Shall I read them aloud, or mark one done?`);
@@ -237,7 +336,9 @@ export default function Home() {
     }
     const found = findTaskByWords(data.tasks, text);
     if (found) { ultronReply(`I found “${found.title}” — ${found.status === 'done' ? 'already done' : 'still open'}${found.dueDate ? `, due ${found.dueDate}` : ''}${found.dueTime ? ` at ${found.dueTime}` : ''}, priority ${found.priority}. Want me to mark it done, move it, or remind you about it?`); return; }
-    ultronReply('I can help with your tasks, Pranav — I only use what is actually in this app, so I will not guess. Try “list today”, “create a task to call the gym at 6pm”, “mark Wake up done”, “move Set up news to tomorrow”, or “remind me at 2pm with a voice reminder”.');
+    // General Q&A fallback — answer from real data, never invent.
+    const nextDue = [...open].filter((t) => t.dueDate && t.dueDate >= today).sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''))[0];
+    ultronReply(`Here is what I know right now, Pranav: ${open.length} task${open.length === 1 ? ' is' : 's are'} open, ${overdue.length} overdue, ${todayOpen.length} due today, and ${doneCount} already done. ${nextDue ? `Your next dated task is ${fmt(nextDue)}.` : 'No dated tasks are coming up.'} Ask me things like “what's my week look like?”, “what's overdue?”, “how am I doing?”, “what's next?”, “remind me at 2pm with a voice reminder”, or name a task or a project and I will tell you about it.`);
   }
   function ultronMic() {
     const SR = (window as unknown as { SpeechRecognition?: new () => unknown; webkitSpeechRecognition?: new () => unknown }).SpeechRecognition || (window as unknown as { webkitSpeechRecognition?: new () => unknown }).webkitSpeechRecognition;
@@ -380,7 +481,9 @@ export default function Home() {
             <div style={{ marginTop: 8 }}>Remind me <select value={data.settings.reminderMinutesBefore} onChange={(e) => save((d) => ({ ...d, settings: { ...d.settings, reminderMinutesBefore: Number(e.target.value) } }))}><option value={30}>30 minutes before</option><option value={60}>1 hour before</option><option value={120}>2 hours before</option></select> a task is due.</div>
             <div style={{ marginTop: 8 }}>Voice language: <select value={data.settings.voiceLang} onChange={(e) => save((d) => ({ ...d, settings: { ...d.settings, voiceLang: e.target.value as Settings['voiceLang'] } }))}>{LANGS.map((l) => <option key={l.v} value={l.v}>{l.l}</option>)}</select></div>
             <p className="muted">Notification permission: {notifState}. <button className="btn small" onClick={askNotifications}>Allow notifications</button></p>
+            <p className="muted">Data: {dataSource === 'supabase' ? 'saved in Supabase (cloud) and on this phone' : 'saved only on this phone (localStorage) — set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to sync to Supabase. See README.'}</p>
             <p className="muted">Honest note: this is a PWA, not a native app. On Android Chrome, notifications and voice reminders work best when the app has been opened recently / is installed. It cannot guarantee an exact background voice alarm when fully closed — that would need a native alarm app. While the app is open, it checks every minute and will notify, show and speak the reminder. If Background reminders are OFF, nothing is scheduled or notified. If Voice reminders are OFF, you get text notifications only, no speech. Ultron-scheduled reminders are stored locally on this phone only.</p>
+            {isNativeApp() && <p className="muted">You are using the native Android app: reminders above are also scheduled on your phone with Capacitor LocalNotifications, so the notification fires even when the app is closed. The voice still speaks when the app opens (or when you tap the notification) — Android does not let a WebView app speak out loud from a fully closed state.</p>}
             {installEvt ? <button className="btn" onClick={() => (installEvt as { prompt: () => void }).prompt()}>Install app on this phone</button> : null}
           </div>
         </div>
@@ -439,7 +542,7 @@ export default function Home() {
             <input className="field" style={{ flex: 1, margin: 0 }} value={ultronInput} onChange={(e) => setUltronInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleUltronSend(ultronInput); }} placeholder="Talk to Ultron — English, Hinglish, Hindi or Marathi…" />
             <button className="btn small" onClick={() => handleUltronSend(ultronInput)}>Send</button>
           </div>
-          <div className="muted" style={{ marginTop: 6 }}>Try: “list today” · “remind me at 2pm with a voice reminder” · “mark Wake up done” · “move Set up news to tomorrow”</div>
+          <div className="muted" style={{ marginTop: 6 }}>Try: “what's my week look like?” · “what's overdue?” · “how am I doing?” · “remind me at 2pm with a voice reminder” · “mark Wake up done”</div>
           {data.ultronReminders.filter((r) => !r.fired).length > 0 && <div className="muted" style={{ marginTop: 6 }}>Scheduled voice reminders: {data.ultronReminders.filter((r) => !r.fired).map((r) => `“${r.title}” ${r.date} ${r.time}`).join(' · ')}</div>}
         </div>
       )}
