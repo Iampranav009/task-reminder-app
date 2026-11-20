@@ -1,9 +1,10 @@
-# Task Reminder App — Standalone PWA
+# Task Reminder App — Native Android app
 
-A phone-first reminder app, rebuilt as a standalone Next.js app so it can be
-hosted on its own and installed on a phone as a PWA. It is the same core
-app as the Muse version (artifact `task-reminder-app`), with no server,
-no API keys and no Muse dependency.
+A phone-first reminder app as a real native Android app (Capacitor +
+Next.js static export). It is the same core app as the Muse version
+(artifact `task-reminder-app`), with no server, no API keys and no
+Muse dependency. It is NOT a PWA — no manifest, no service worker,
+no install prompt.
 
 ## What it does
 
@@ -18,10 +19,7 @@ no API keys and no Muse dependency.
   (all done), red (remaining) or yellow (half done).
 - **Reminders inbox** — overdue, due-today, daily and high-alert items,
   with Snooze (1 hour / this evening / tomorrow morning) and Dismiss.
-- **Voice capture** — tap the mic, speak (Web Speech API, live dictation),
-  then **Understand my task** parses it into an editable draft
-  (title, notes, due date/time like “2 o'clock” / “evening”, priority,
-  project). You review and edit before saving.
+- **Voice capture** — only via the centre **Ultron** mic in the bottom nav (no separate “Say a task” button anywhere). Tap Ultron's mic, speak (Web Speech API, continuous listening until you tap Stop), and Ultron understands it — create a task, set a reminder, mark done, or move it. Ultron's chat also parses typed text the same way.
 - **Listen / read aloud** — a small speaker 🔊 button on Home reads
   today's tasks aloud, plus per-task Listen, using the phone's free
   `speechSynthesis` voices. Language picker:
@@ -111,7 +109,7 @@ next step — do not use the v1 policy for a multi-user app.
 
 The same web app is wrapped with **Capacitor** (`android/`,
 app id `com.pranav.taskreminder`) so it installs as a real Android
-app instead of only a PWA.
+app, not as a PWA.
 
 **How the APK is built:** GitHub Actions
 (`.github/workflows/android-release.yml`) runs on every push to
@@ -125,20 +123,17 @@ is a **debug-signed APK for testing**; release signing comes later.
 tap it, allow installing from this source, open Task Reminder and
 allow Notifications when asked.
 
-**Native vs PWA:**
-- Native: reminders are scheduled on the phone with Capacitor
+**Native Android (no PWA):**
+- Reminders are scheduled on the phone with Capacitor
   LocalNotifications (exact alarms), so the notification fires
   even when the app is closed. Voice uses the phone's free voices
   (`en-IN` / `hi-IN` / `mr-IN`) in the WebView.
-- PWA: notifications work best when the app was opened recently;
-  it cannot guarantee an exact background alarm when fully closed.
-- Honest limit (both): the voice speaks when the app opens or
+- Honest limit: the voice speaks when the app opens or
   when you tap the notification — Android does not let a WebView
   app speak out loud from a fully closed state without a
   foreground service.
 
-**Build the APK locally (needs Java 17 + Android SDK, not
-installed in this workspace):**
+**Build the APK locally (needs Java 21 + Android SDK, Capacitor 8):**
 ```bash
 npm run build
 npx cap sync android
@@ -166,13 +161,6 @@ GitHub Pages also works: `npm run build`, then publish the `out/`
 folder (note: `manifest.json` / `sw.js` paths are root-relative, so
 serve from the domain root or a custom domain, not a `/repo/` sub-path).
 
-## Install as a PWA on Android
-
-1. Open the deployed site in Chrome on your phone.
-2. Tap **⋮ → Add to Home screen** (or **Install app** if Chrome offers it).
-3. It opens full-screen, works offline after the first visit
-   (service worker in `public/sw.js`), and appears in the app drawer.
-
 ## Notifications & background — honest limitation
 
 While the app is **open**, it checks every minute and, 2 hours before a
@@ -181,13 +169,10 @@ an in-app friendly reminder — *“Hey Pranav, you haven't done X yet,
 have you done it? Want me to mark it done or move it?”* — and speaks
 it with the phone's free voice if voice reminders are on.
 
-A PWA on Android Chrome **cannot guarantee an exact background voice
-alarm when fully closed**. Notifications work best when the app has
-been opened recently; the browser/OS may delay or suppress them when
-the app has been closed for a long time, and a voice note cannot
-auto-play out loud by itself. This app does **not** claim to be a
-native alarm. For a guaranteed ringing voice alarm, a native Android
-app would be needed.
+The native app schedules exact alarms with Android, so notifications
+fire even when the app is closed. A voice note cannot auto-play out
+loud by itself from a fully closed state — the voice speaks when the
+app opens or when you tap the notification.
 
 ## Files
 
@@ -195,16 +180,16 @@ app would be needed.
 - `src/lib/core.ts` — types, seed data, localStorage, voice parsing,
   speech helpers
 - `src/lib/native.ts` — Capacitor bridge: scheduled local
-  notifications on Android (no-op on web/PWA)
+  notifications on Android (no-op on web)
 - `src/lib/supabase.ts` — Supabase client + sync layer
   (load from / save to Supabase, debounced; localStorage fallback)
-- `supabase/migrations/001_init.sql` — Postgres schema for
-  `projects`, `tasks`, `ultron_reminders`, `app_settings` (+ RLS)
+- `supabase/migrations/001_init.sql` + `002_priority_very_normal.sql` — Postgres schema for
+  `projects`, `tasks`, `ultron_reminders`, `app_settings` (+ RLS). Run 002 as well if 001 was already applied.
 - `android/` — Capacitor Android project (app id
   `com.pranav.taskreminder`); `android/app/src/main/AndroidManifest.xml`
   declares notification / exact-alarm / boot permissions
 - `.github/workflows/android-release.yml` — GitHub Actions: build
   the web app, sync Capacitor, build the debug APK, publish it
   to the v1.0.0 GitHub Release
-- `public/manifest.json`, `public/sw.js`, `public/icon-*.png` — PWA
+- `public/icon-*.png` — app icons (no PWA manifest / service worker — this is a native Android app)
 - `next.config.js` — `output: 'export'` (static, no server)

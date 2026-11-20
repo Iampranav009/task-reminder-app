@@ -4,7 +4,7 @@ const config: CapacitorConfig = {
   appId: 'com.pranav.taskreminder',
   appName: 'Task Reminder',
   webDir: 'out',
-  backgroundColor: '#0b1220',
+  backgroundColor: '#000000',
   android: {
     allowMixedContent: false,
   },

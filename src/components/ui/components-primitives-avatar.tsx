@@ -10,15 +10,13 @@ import { motion } from "motion/react";
 // renders identically without Tailwind. Presets, blinking eyes, noise /
 // grain SVGs and the whileTap squash are kept as supplied.
 //
-// Mouth + states are additions the supplied component did not have:
-//  - idle: slow blink + gentle bob, mouth a small closed line.
-//  - listening: eyes widen, a pulsing ring, mouth slightly open as if hearing.
-//  - speaking: mouth opens/closes in a fast rhythm.
-//  - thinking: mouth closed, gentle pulse (kept for completeness).
-//
-// Honest note: speechSynthesis provides NO phoneme data, so the speaking
-// mouth is rhythmic movement timed to the spoken reply — it is NOT true
-// phoneme lip-sync. Do not describe it as phoneme lip-sync anywhere.
+// Eyes-only face (user decision, 20 Nov 2026): NO mouth line.
+//  - idle: slow blink + gentle bob.
+//  - listening: eyes widen, a pulsing ring.
+//  - speaking: eyes widen, red glow (no mouth movement).
+//  - thinking: gentle pulse (kept for completeness).
+// Tapping the avatar is interactive: whileTap squash + the onClick
+// handler (in the app, tap toggles Ultron listening).
 
 export type AvatarColor =
   | "blue"
@@ -56,14 +54,6 @@ const AVATAR_KEYFRAMES = `
 @keyframes av-bob {
   0%, 100% { transform: translateY(0); }
   50%      { transform: translateY(-4px); }
-}
-@keyframes av-mouth-talk {
-  from { transform: scaleY(0.3) scaleX(0.85); }
-  to   { transform: scaleY(1) scaleX(1.1); }
-}
-@keyframes av-mouth-listen {
-  0%, 100% { transform: scale(1); opacity: 0.7; }
-  50%      { transform: scale(1.18); opacity: 1; }
 }
 @keyframes av-ring {
   0%   { transform: scale(1); opacity: 0.7; }
@@ -193,12 +183,12 @@ const PRESETS: Record<
 // xl is the big Ultron-sheet size the user asked for.
 const SIZE: Record<
   AvatarSize,
-  { orb: number; eyeW: number; eyeH: number; eyeGap: number; eyeY: number; mouthW: number; mouthH: number }
+  { orb: number; eyeW: number; eyeH: number; eyeGap: number; eyeY: number }
 > = {
-  sm: { orb: 32, eyeW: 4, eyeH: 6, eyeGap: 6, eyeY: -2, mouthW: 10, mouthH: 3 },
-  md: { orb: 48, eyeW: 6, eyeH: 10, eyeGap: 10, eyeY: -2, mouthW: 14, mouthH: 4 },
-  lg: { orb: 64, eyeW: 8, eyeH: 12, eyeGap: 14, eyeY: -4, mouthW: 20, mouthH: 5 },
-  xl: { orb: 168, eyeW: 22, eyeH: 32, eyeGap: 28, eyeY: -10, mouthW: 52, mouthH: 12 },
+  sm: { orb: 32, eyeW: 4, eyeH: 6, eyeGap: 6, eyeY: -2 },
+  md: { orb: 48, eyeW: 6, eyeH: 10, eyeGap: 10, eyeY: -2 },
+  lg: { orb: 64, eyeW: 8, eyeH: 12, eyeGap: 14, eyeY: -4 },
+  xl: { orb: 168, eyeW: 22, eyeH: 32, eyeGap: 28, eyeY: -10 },
 };
 
 const SHAPE_RADIUS: Record<AvatarShape, string> = {
@@ -246,31 +236,6 @@ function Avatar({
   const noiseId = `av-n${uid.replace(/\W/g, "")}`;
   const preset = PRESETS[color] ?? PRESETS.blue;
   const dims = SIZE[size] ?? SIZE.md;
-
-  const mouthStyle: React.CSSProperties =
-    state === "speaking"
-      ? {
-          width: dims.mouthW * 1.2,
-          height: dims.mouthH * 2.4,
-          borderRadius: "50%",
-          background: "rgba(255,255,255,0.95)",
-          animation: "av-mouth-talk 0.32s ease-in-out infinite alternate",
-        }
-      : state === "listening"
-        ? {
-            width: dims.mouthW * 1.1,
-            height: dims.mouthH * 2.2,
-            borderRadius: "50%",
-            background: "rgba(255,255,255,0.9)",
-            animation: "av-mouth-listen 1.2s ease-in-out infinite",
-          }
-        : {
-            width: dims.mouthW,
-            height: dims.mouthH,
-            borderRadius: 999,
-            background: "rgba(255,255,255,0.85)",
-            opacity: state === "thinking" ? 0.6 : 0.85,
-          };
 
   return (
     <>
@@ -423,7 +388,7 @@ function Avatar({
                 irisGradient={preset.iris}
                 width={dims.eyeW}
                 height={dims.eyeH}
-                widen={state === "listening"}
+                widen={state === "listening" || state === "speaking"}
               />
               <Eye
                 blinking={blinking}
@@ -431,10 +396,9 @@ function Avatar({
                 irisGradient={preset.iris}
                 width={dims.eyeW}
                 height={dims.eyeH}
-                widen={state === "listening"}
+                widen={state === "listening" || state === "speaking"}
               />
             </div>
-            <div aria-hidden="true" style={mouthStyle} />
           </div>
         </motion.div>
       </div>

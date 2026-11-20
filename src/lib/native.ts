@@ -1,7 +1,7 @@
 /**
  * Native (Capacitor) bridge for the Android app.
  *
- * Everything here is guarded: on the web / PWA build there is no Capacitor
+ * Everything here is guarded: on the web build there is no Capacitor
  * runtime, so every function returns false / does nothing and the app keeps
  * working with the browser Notification API + speechSynthesis instead.
  *
@@ -42,6 +42,40 @@ async function getLocalNotifications() {
     return mod.LocalNotifications;
   } catch {
     return null;
+  }
+}
+
+/** Current Android notification permission: 'granted' | 'denied' | 'prompt' | null (web/unknown). */
+export async function checkNativeNotificationPermission(): Promise<string | null> {
+  const ln = await getLocalNotifications();
+  if (!ln) return null;
+  try {
+    const res = await ln.checkPermissions();
+    return (res as { display?: string }).display || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Send one immediate test notification on Android (no-op on web). */
+export async function sendTestNativeNotification(): Promise<boolean> {
+  const ln = await getLocalNotifications();
+  if (!ln) return false;
+  try {
+    await ensureChannel();
+    await ln.schedule({
+      notifications: [{
+        id: 999999,
+        title: 'Task Reminder — test',
+        body: 'Notifications are on. Ultron will remind you here.',
+        schedule: { at: new Date(Date.now() + 1000), allowWhileIdle: true },
+        channelId: 'task-reminders',
+        extra: { kind: 'test-notification' },
+      }],
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
 

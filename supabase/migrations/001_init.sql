@@ -25,7 +25,7 @@ create table if not exists public.projects (
   description text not null default '',
   due_date date,
   priority text not null default 'normal'
-    check (priority in ('high_alert', 'high', 'normal')),
+    check (priority in ('high_alert', 'high', 'normal', 'very_normal')),
   color text not null default '#0E7C6B',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -45,7 +45,7 @@ create table if not exists public.tasks (
   due_time time,
   kind text not null default 'task' check (kind in ('task', 'daily')),
   priority text not null default 'normal'
-    check (priority in ('high_alert', 'high', 'normal')),
+    check (priority in ('high_alert', 'high', 'normal', 'very_normal')),
   status text not null default 'todo' check (status in ('todo', 'done')),
   reminders_per_day integer not null default 0,
   completed_at timestamptz,

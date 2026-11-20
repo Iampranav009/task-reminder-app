@@ -1,4 +1,4 @@
-export type Priority = 'high_alert' | 'high' | 'normal';
+export type Priority = 'high_alert' | 'high' | 'normal' | 'very_normal';
 export type TaskKind = 'task' | 'daily';
 export type MuseTheme = 'ocean' | 'sunset' | 'forest' | 'rose' | 'mono' | 'ultron';
 export type VoiceLang = 'en-IN' | 'hi-IN' | 'mr-IN';
@@ -95,6 +95,7 @@ export function parseVoiceTask(text: string, projects: Project[]) {
   let priority: Priority = 'normal';
   if (lower.includes('high alert') || lower.includes('urgent') || lower.includes('very important') || lower.includes('must do')) priority = 'high_alert';
   else if (lower.includes('important') || lower.includes('high priority')) priority = 'high';
+  else if (lower.includes('very normal') || lower.includes('low priority') || lower.includes('not important') || lower.includes('whenever')) priority = 'very_normal';
   let projectId: number | null = null;
   for (const p of projects) if (lower.includes(p.name.toLowerCase().split(' ')[0])) { projectId = p.id; break; }
   const kind: TaskKind = lower.includes('daily') || lower.includes('every day') ? 'daily' : 'task';

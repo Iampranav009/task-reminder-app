@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AppData, MuseTheme, Priority, Project, Settings, Task, THEMES, UltronReminder, VOICE_KEYWORDS, findTaskByWords, loadData, parseTimeOfDay, parseVoiceTask, pickVoice, seedData, speakText, stopSpeaking, STORE_KEY, taskSpeechText, todayStr, addDaysStr } from '../src/lib/core';
-import { isNativeApp, requestNativeNotificationPermission, rescheduleNativeReminders, type NativeReminder } from '../src/lib/native';
+import { checkNativeNotificationPermission, isNativeApp, requestNativeNotificationPermission, rescheduleNativeReminders, sendTestNativeNotification, type NativeReminder } from '../src/lib/native';
 import { debouncedSaveToSupabase, loadFromSupabase, supabaseConfigured } from '../src/lib/supabase';
 import Avatar, { type AvatarState } from '@/components/ui/components-primitives-avatar';
 import { Bell, Calendar, CalendarDays, ChevronLeft, ChevronRight, Home as HomeIcon, Mic, Pencil, Plus, Search, Send, Square, Trash2, User, Volume2, X } from 'lucide-react';
@@ -21,14 +21,17 @@ export default function Home() {
   const [form, setForm] = useState({ title: '', notes: '', projectId: '', dueDate: '', dueTime: '', kind: 'task' as 'task' | 'daily', priority: 'normal' as Priority });
   const [showProjectForm, setShowProjectForm] = useState(false);
   const [projForm, setProjForm] = useState({ name: '', description: '', dueDate: '', priority: 'normal' as Priority, color: '#0E7C6B' });
-  const [voiceOpen, setVoiceOpen] = useState(false);
-  const [listening, setListening] = useState(false);
-  const [transcript, setTranscript] = useState('');
-  const [draft, setDraft] = useState<ReturnType<typeof parseVoiceTask> | null>(null);
+  // Mic sessions: the recogniser must keep listening until Stop is tapped.
+  // Web Speech fires onend after a pause / ~60s, so the session flag +
+  // auto-restart below keeps it going instead of closing after ~1 second.
+  const voiceSessionRef = useRef(false);
+  const ultronSessionRef = useRef(false);
+  const ultronRestartRef = useRef<number | null>(null);
+  const [micHint, setMicHint] = useState<string | null>(null);
   const [speaking, setSpeaking] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [ultronOpen, setUltronOpen] = useState(false);
-  const [ultronMsgs, setUltronMsgs] = useState<{ role: 'user' | 'ultron'; text: string }[]>([{ role: 'ultron', text: 'Good to see you, Pranav. I am Ultron — the main brain of this app. I know your tasks, projects and deadlines. Ask me about your day or your week, what is overdue, how you are doing, or say “remind me at 2pm with a voice reminder” and I will schedule it.' }]);
+  const [ultronMsgs, setUltronMsgs] = useState<{ role: 'user' | 'ultron'; text: string }[]>([{ role: 'ultron', text: 'Hey Pranav, I am Ultron. Ask me about your day or your week, or say “remind me at 2pm with a voice reminder”.' }]);
   const [ultronInput, setUltronInput] = useState('');
   const [ultronListening, setUltronListening] = useState(false);
   const [ultronSpeaking, setUltronSpeaking] = useState(false);
@@ -37,7 +40,6 @@ export default function Home() {
   // Ultron's reply is being spoken aloud, idle otherwise.
   const ultronAvatarState: AvatarState = ultronListening ? 'listening' : ultronSpeaking ? 'speaking' : 'idle';
   const [notifState, setNotifState] = useState('unknown');
-  const [installEvt, setInstallEvt] = useState<unknown>(null);
   const [dataSource, setDataSource] = useState<'local' | 'supabase'>('local');
   const recogRef = useRef<unknown>(null);
 
@@ -80,12 +82,23 @@ export default function Home() {
     }
     return () => document.body.classList.remove('ultron-mode');
   }, [ultronOpen]);
+  // Native Android app: no service worker, no PWA install prompt.
+  // Read the real notification permission on start so Settings shows it.
   useEffect(() => {
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
-    if ('Notification' in window) setNotifState(Notification.permission);
-    const onPrompt = (e: Event) => { e.preventDefault(); setInstallEvt(e); };
-    window.addEventListener('beforeinstallprompt', onPrompt);
-    return () => window.removeEventListener('beforeinstallprompt', onPrompt);
+    (async () => {
+      if (isNativeApp()) {
+        const p = await checkNativeNotificationPermission();
+        if (p) setNotifState(p === 'granted' ? 'granted' : p === 'denied' ? 'denied' : 'default');
+      } else if ('Notification' in window) {
+        setNotifState(Notification.permission);
+      }
+    })();
+    return () => {
+      voiceSessionRef.current = false;
+      ultronSessionRef.current = false;
+      if (ultronRestartRef.current) window.clearTimeout(ultronRestartRef.current);
+      (recogRef.current as { stop?: () => void } | null)?.stop?.();
+    };
   }, []);
   // Reminder checker: every minute while the app is open.
   useEffect(() => {
@@ -209,40 +222,43 @@ export default function Home() {
     else { until.setDate(until.getDate() + 1); until.setHours(8, 0, 0, 0); }
     save((d) => ({ ...d, snoozedUntil: { ...d.snoozedUntil, [t.id]: until.toISOString() } }));
   }
+  async function checkNotifStatus() {
+    if (isNativeApp()) {
+      const p = await checkNativeNotificationPermission();
+      if (p) setNotifState(p === 'granted' ? 'granted' : p === 'denied' ? 'denied' : 'default');
+      return;
+    }
+    if ('Notification' in window) setNotifState(Notification.permission);
+  }
+  async function sendTestNotification() {
+    if (isNativeApp()) {
+      if (await sendTestNativeNotification()) { setToast('Test notification sent — check your notification shade.'); return; }
+      setToast('Could not send a test notification. Check that notifications are allowed for this app.');
+      return;
+    }
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try { new Notification('Task Reminder — test', { body: 'Notifications are on. Ultron will remind you here.', icon: '/icon-192.png' }); setToast('Test notification sent.'); } catch { setToast('Could not send a test notification.'); }
+    } else setToast('Notifications are not allowed yet — tap Allow notifications first.');
+  }
   async function askNotifications() {
     if (isNativeApp()) {
       const ok = await requestNativeNotificationPermission();
       setNotifState(ok ? 'granted' : 'denied');
-      setToast(ok ? 'Notifications on — on this Android app, reminders are scheduled on your phone, so they fire even when the app is closed.' : 'Notification permission was not granted. You can turn it on in Settings, or in Android Settings > Apps > Task Reminder > Notifications.');
+      // Save the result: notifications toggle follows the real permission.
+      save((d) => ({ ...d, settings: { ...d.settings, notificationsEnabled: ok } }));
+      if (ok) {
+        setToast('Notifications on — reminders are scheduled on your phone, so they fire even when the app is closed.');
+        await sendTestNativeNotification();
+      } else {
+        setToast('Notification permission was not granted. Turn it on in Android Settings > Apps > Task Reminder > Notifications, then tap Re-check.');
+      }
       return;
     }
     if (!('Notification' in window)) { setToast('Notifications are not supported in this browser.'); return; }
     const p = await Notification.requestPermission(); setNotifState(p);
-    if (p === 'granted') setToast('Notifications on — I will remind you 2 hours before a task is due, and again if you miss it.');
+    save((d) => ({ ...d, settings: { ...d.settings, notificationsEnabled: p === 'granted' } }));
+    if (p === 'granted') { setToast('Notifications on — I will remind you 2 hours before a task is due, and again if you miss it.'); await sendTestNotification(); }
     else setToast('Notification permission was not granted. You can turn it on in Settings, or in your browser site settings.');
-  }
-  function startListening() {
-    const SR = (window as unknown as { SpeechRecognition?: new () => unknown; webkitSpeechRecognition?: new () => unknown }).SpeechRecognition || (window as unknown as { webkitSpeechRecognition?: new () => unknown }).webkitSpeechRecognition;
-    if (!SR) { setToast('Voice capture is not supported in this browser. You can type the task instead.'); return; }
-    const rec = new SR() as { continuous: boolean; interimResults: boolean; lang: string; onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null; onerror: (() => void) | null; onend: (() => void) | null; start: () => void; stop: () => void };
-    rec.continuous = true; rec.interimResults = true; rec.lang = 'en-IN';
-    rec.onresult = (e) => { let txt = ''; for (let i = 0; i < e.results.length; i++) txt += e.results[i][0].transcript; setTranscript(txt); };
-    rec.onerror = () => setListening(false); rec.onend = () => setListening(false);
-    recogRef.current = rec; rec.start(); setListening(true);
-  }
-  function stopListening() { (recogRef.current as { stop?: () => void } | null)?.stop?.(); setListening(false); }
-  function understandTask() {
-    stopListening();
-    if (!transcript.trim()) return;
-    setDraft(parseVoiceTask(transcript, data.projects));
-  }
-  function saveDraft() {
-    if (!draft) return;
-    save((d) => {
-      const id = Math.max(0, ...d.tasks.map((x) => x.id)) + 1;
-      return { ...d, tasks: [...d.tasks, { id, title: draft.title, notes: draft.notes, projectId: draft.projectId, dueDate: draft.dueDate, dueTime: draft.dueTime, kind: draft.kind, priority: draft.priority, remindersPerDay: draft.priority === 'high_alert' ? 3 : 0, status: 'todo', completedAt: null, dailyDoneOn: null }] };
-    });
-    setDraft(null); setTranscript(''); setVoiceOpen(false); setToast('Task saved from your voice.');
   }
   function listen(text: string, id: string) {
     if (speaking === id) { stopSpeaking(); setSpeaking(null); return; }
@@ -255,9 +271,8 @@ export default function Home() {
     listen(items.map((t) => taskSpeechText(t)).join(' '), 'today');
   }
   // Speak an Ultron reply aloud (only when Voice reminders is ON).
-  // Honest note: speechSynthesis gives NO phoneme data, so the avatar's
-  // mouth moves in a rhythm timed to the spoken reply — it is NOT true
-  // phoneme lip-sync.
+  // The avatar is eyes-only: while speaking its eyes widen and it glows.
+  // Safety net below clears the speaking state if onend never fires.
   function speakUltron(text: string) {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
     if (!data.settings.voiceReminders) return;
@@ -271,9 +286,7 @@ export default function Home() {
     u.onerror = () => setUltronSpeaking(false);
     setUltronSpeaking(true);
     window.speechSynthesis.speak(u);
-    // Safety net: never leave the mouth moving if onend never fires.
-    // Cleared when a new reply starts, so a fast second reply is not
-    // cut short by the previous reply's timer.
+    // Safety net: never leave the speaking state on if onend never fires.
     if (ultronSpeakTimerRef.current) clearTimeout(ultronSpeakTimerRef.current);
     ultronSpeakTimerRef.current = window.setTimeout(() => setUltronSpeaking(false), Math.min(60000, Math.max(4000, text.length * 90)));
   }
@@ -383,15 +396,50 @@ export default function Home() {
     const nextDue = [...open].filter((t) => t.dueDate && t.dueDate >= today).sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''))[0];
     ultronReply(`Here is what I know right now, Pranav: ${open.length} task${open.length === 1 ? ' is' : 's are'} open, ${overdue.length} overdue, ${todayOpen.length} due today, and ${doneCount} already done. ${nextDue ? `Your next dated task is ${fmt(nextDue)}.` : 'No dated tasks are coming up.'} Ask me things like “what's my week look like?”, “what's overdue?”, “how am I doing?”, “what's next?”, “remind me at 2pm with a voice reminder”, or name a task or a project and I will tell you about it.`);
   }
+  function stopUltronListening() {
+    ultronSessionRef.current = false;
+    if (ultronRestartRef.current) { window.clearTimeout(ultronRestartRef.current); ultronRestartRef.current = null; }
+    (recogRef.current as { stop?: () => void } | null)?.stop?.();
+    setUltronListening(false);
+  }
   function ultronMic() {
+    // Tap again while listening = Stop. The mic stays on until Stop is tapped.
+    if (ultronListening) { stopUltronListening(); return; }
     const SR = (window as unknown as { SpeechRecognition?: new () => unknown; webkitSpeechRecognition?: new () => unknown }).SpeechRecognition || (window as unknown as { webkitSpeechRecognition?: new () => unknown }).webkitSpeechRecognition;
     if (!SR) { setToast('Voice is not supported in this browser. You can type to Ultron instead.'); return; }
-    const rec = new SR() as { continuous: boolean; interimResults: boolean; lang: string; onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null; onerror: (() => void) | null; onend: (() => void) | null; start: () => void; stop: () => void };
-    rec.continuous = false; rec.interimResults = true; rec.lang = data.settings.voiceLang;
-    rec.onresult = (e) => { let txt = ''; for (let i = 0; i < e.results.length; i++) txt += e.results[i][0].transcript; setUltronInput(txt); };
-    rec.onerror = () => setUltronListening(false); rec.onend = () => setUltronListening(false);
+    const rec = new SR() as { continuous: boolean; interimResults: boolean; lang: string; onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null; onerror: ((e: { error?: string }) => void) | null; onend: (() => void) | null; start: () => void; stop: () => void };
+    rec.continuous = true; rec.interimResults = true; rec.lang = data.settings.voiceLang;
+    ultronSessionRef.current = true;
+    setMicHint(null);
+    rec.onresult = (e) => {
+      let txt = '';
+      for (let i = 0; i < e.results.length; i++) txt += e.results[i][0].transcript;
+      setUltronInput(txt);
+      setMicHint(null);
+    };
+    rec.onerror = (ev) => {
+      const err = (ev as { error?: string }).error;
+      if (err === 'not-allowed' || err === 'service-not-allowed') {
+        ultronSessionRef.current = false;
+        setUltronListening(false);
+        setMicHint('Microphone permission is blocked. Allow the mic in Android Settings > Apps > Task Reminder > Permissions > Microphone, then tap the mic again.');
+      } else if (err === 'no-speech') {
+        setMicHint('No speech heard yet — I am still listening, keep talking.');
+      }
+      // Other errors (e.g. network/aborted): do not close — onend below restarts.
+    };
+    rec.onend = () => {
+      // Web Speech ends the session after a pause or ~60s. While the
+      // session is active, restart it so listening continues until Stop.
+      if (!ultronSessionRef.current) { setUltronListening(false); return; }
+      ultronRestartRef.current = window.setTimeout(() => {
+        try { rec.start(); } catch { setUltronListening(false); }
+      }, 300);
+    };
     stopSpeaking(); setUltronSpeaking(false);
-    rec.start(); setUltronListening(true);
+    recogRef.current = rec;
+    try { rec.start(); } catch { setToast('Could not start the microphone. Try again.'); return; }
+    setUltronListening(true);
   }
   const projectName = (id: number | null) => data.projects.find((p) => p.id === id)?.name || 'No project';
 
@@ -416,6 +464,7 @@ export default function Home() {
       : filtered.filter((t) => t.dueDate && t.dueDate.slice(0, 7) === calMonth);
   const weeks: string[][] = [];
   for (let i = 0; i < 12; i++) weeks.push(data.completedLog.filter((d0) => { const dt = new Date(d0 + 'T12:00:00'); const now = new Date(); const start = new Date(now); start.setDate(now.getDate() - (11 - i) * 7); return dt >= start && dt < new Date(start.getTime() + 7 * 864e5); }).map(() => 'x'));
+  const priorityLabel = (p: Priority) => p === 'high_alert' ? 'High alert' : p === 'high' ? 'Urgent' : p === 'normal' ? 'Normal' : 'Very normal';
   const taskRow = (t: Task) => (
     <div key={t.id} className="glass card">
       <div className="row">
@@ -425,7 +474,7 @@ export default function Home() {
           <div className="muted">{projectName(t.projectId)}{t.dueDate ? ` · ${t.dueDate}` : ''}{t.dueTime ? ` ${t.dueTime}` : ''}</div>
           {t.notes && <div className="muted">{t.notes}</div>}
         </div>
-        <span className={`pill ${t.priority}`}>{t.priority === 'high_alert' ? 'High alert' : t.priority}</span>
+        <span className="priowrap"><span className={`dot ${t.priority}`} aria-label={priorityLabel(t.priority)} /><span className={`pill ${t.priority}`}>{priorityLabel(t.priority)}</span></span>
       </div>
       <div className="row" style={{ marginTop: 8 }}>
         <button className="btn ghost small" onClick={() => listen(taskSpeechText(t), `task-${t.id}`)}>{speaking === `task-${t.id}` ? <><Square size={14} /> Stop</> : <><Volume2 size={14} /> Listen</>}</button>
@@ -446,25 +495,16 @@ export default function Home() {
 
       {view === 'today' && (
         <div>
-          <div className="glass card">
-            <div className="row"><strong style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Mic size={18} /> Say a task</strong><span className="muted">Tap the mic, speak, then Understand my task</span></div>
-            <div style={{ textAlign: 'center', padding: 12 }}>
-              <button className={`mic ${listening ? 'listening' : ''}`} onClick={() => { setVoiceOpen(true); startListening(); }} aria-label="Say a task"><Mic size={30} /></button>
-            </div>
-            <div className="row" style={{ justifyContent: 'center' }}>
-              <button className="btn ghost iconbtn" style={{ borderRadius: '50%', width: 44, height: 44, padding: 0 }} onClick={listenToday} aria-label="Read today's tasks aloud" title="Read today's tasks aloud">{speaking === 'today' ? <Square size={18} /> : <Volume2 size={18} />}</button>
-              <button className="btn ghost" onClick={openNewTask}><Plus size={18} /> Add task</button>
-            </div>
-            <div className="row" style={{ justifyContent: 'center', marginTop: 8 }}>
-              <span className="muted">Voice: </span>
-              {LANGS.map((l) => <button key={l.v} className="btn ghost small" style={{ background: data.settings.voiceLang === l.v ? 'var(--accent)' : undefined, color: data.settings.voiceLang === l.v ? '#000' : undefined }} onClick={() => save((d) => ({ ...d, settings: { ...d.settings, voiceLang: l.v } }))}>{l.l}</button>)}
-            </div>
+          <div className="row" style={{ marginTop: 12 }}>
+            <button className="btn" onClick={openNewTask}><Plus size={18} /> Add task</button>
+            <button className="btn ghost iconbtn" onClick={listenToday} aria-label="Read today's tasks aloud" title="Read today's tasks aloud">{speaking === 'today' ? <Square size={18} /> : <Volume2 size={18} />} Listen</button>
+            <button className="btn ghost" onClick={() => setView('reminders')}><Bell size={18} /> Reminders{reminders.length ? ` (${reminders.length})` : ''}</button>
           </div>
           <h3>Today</h3>
           {todayTasks.length ? todayTasks.map(taskRow) : <p className="muted">Nothing open for today. Add a task, or speak one.</p>}
           <h3>Main projects</h3>
           {data.projects.map((p) => (
-            <div key={p.id} className="glass card"><div className="row"><span style={{ width: 12, height: 12, borderRadius: '50%', background: p.color }} /> <strong>{p.name}</strong> <span className={`pill ${p.priority}`}>{p.priority}</span></div><div className="muted">{p.description}</div><div className="muted">{data.tasks.filter((t) => t.projectId === p.id && t.status === 'todo').length} open tasks</div></div>
+            <div key={p.id} className="glass card"><div className="row"><span style={{ width: 12, height: 12, borderRadius: '50%', background: p.color }} /> <strong>{p.name}</strong> <span className="priowrap"><span className={`dot ${p.priority}`} /><span className={`pill ${p.priority}`}>{priorityLabel(p.priority)}</span></span></div><div className="muted">{p.description}</div><div className="muted">{data.tasks.filter((t) => t.projectId === p.id && t.status === 'todo').length} open tasks</div></div>
           ))}
           <button className="btn ghost" onClick={() => setShowProjectForm(true)}><Plus size={18} /> Add project</button>
         </div>
@@ -524,11 +564,16 @@ export default function Home() {
             <label className="row"><input type="checkbox" checked={data.settings.friendlyReminders} onChange={(e) => save((d) => ({ ...d, settings: { ...d.settings, friendlyReminders: e.target.checked } }))} /> Friendly reminder wording</label>
             <div style={{ marginTop: 8 }}>Remind me <select value={data.settings.reminderMinutesBefore} onChange={(e) => save((d) => ({ ...d, settings: { ...d.settings, reminderMinutesBefore: Number(e.target.value) } }))}><option value={30}>30 minutes before</option><option value={60}>1 hour before</option><option value={120}>2 hours before</option></select> a task is due.</div>
             <div style={{ marginTop: 8 }}>Voice language: <select value={data.settings.voiceLang} onChange={(e) => save((d) => ({ ...d, settings: { ...d.settings, voiceLang: e.target.value as Settings['voiceLang'] } }))}>{LANGS.map((l) => <option key={l.v} value={l.v}>{l.l}</option>)}</select></div>
-            <p className="muted">Notification permission: {notifState}. <button className="btn small" onClick={askNotifications}>Allow notifications</button></p>
+            <div style={{ marginTop: 8 }}>
+              <div className="row"><strong>Notifications</strong><span className={`pill ${notifState === 'granted' ? 'normal' : notifState === 'denied' ? 'high_alert' : 'very_normal'}`}>{notifState === 'granted' ? 'Allowed' : notifState === 'denied' ? 'Blocked' : notifState === 'default' ? 'Not asked yet' : 'Unknown'}</span></div>
+              <p className="muted">Permission: {notifState}.{notifState === 'denied' ? ' Blocked — turn it on in Android Settings > Apps > Task Reminder > Notifications, then tap Re-check.' : notifState === 'granted' ? ' Reminders will show as Android notifications.' : ' Tap Allow notifications and accept the Android permission prompt.'}</p>
+              <div className="row" style={{ flexWrap: 'wrap' }}>
+                <button className="btn small" onClick={askNotifications}>{notifState === 'granted' ? 'Send test notification' : 'Allow notifications'}</button>
+                {notifState !== 'granted' && <button className="btn ghost small" onClick={checkNotifStatus}>Re-check permission</button>}
+              </div>
+            </div>
             <p className="muted">Data: {dataSource === 'supabase' ? 'saved in Supabase (cloud) and on this phone' : 'saved only on this phone (localStorage) — set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to sync to Supabase. See README.'}</p>
-            <p className="muted">Honest note: this is a PWA, not a native app. On Android Chrome, notifications and voice reminders work best when the app has been opened recently / is installed. It cannot guarantee an exact background voice alarm when fully closed — that would need a native alarm app. While the app is open, it checks every minute and will notify, show and speak the reminder. If Background reminders are OFF, nothing is scheduled or notified. If Voice reminders are OFF, you get text notifications only, no speech. Ultron-scheduled reminders are stored locally on this phone only.</p>
-            {isNativeApp() && <p className="muted">You are using the native Android app: reminders above are also scheduled on your phone with Capacitor LocalNotifications, so the notification fires even when the app is closed. The voice still speaks when the app opens (or when you tap the notification) — Android does not let a WebView app speak out loud from a fully closed state.</p>}
-            {installEvt ? <button className="btn" onClick={() => (installEvt as { prompt: () => void }).prompt()}>Install app on this phone</button> : null}
+            <p className="muted">This is the native Android app: reminders are scheduled on your phone with Capacitor LocalNotifications, so the notification fires even when the app is closed. The voice speaks when the app opens (or when you tap the notification) — Android does not let a WebView app speak out loud from a fully closed state. While the app is open, it checks every minute and will notify, show and speak the reminder. If Background reminders are OFF, nothing is scheduled or notified. If Voice reminders are OFF, you get text notifications only, no speech.</p>
           </div>
         </div>
       )}
@@ -539,7 +584,7 @@ export default function Home() {
           <textarea className="field" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Sub-description / notes" />
           <div className="row"><input className="field" type="date" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} /><input className="field" type="time" value={form.dueTime} onChange={(e) => setForm({ ...form, dueTime: e.target.value })} /></div>
           <div className="row"><select className="field" value={form.projectId} onChange={(e) => setForm({ ...form, projectId: e.target.value })}><option value="">No project</option>{data.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
-          <select className="field" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value as Priority })}><option value="normal">Normal</option><option value="high">High</option><option value="high_alert">High alert</option></select>
+          <select className="field" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value as Priority })}><option value="very_normal">Very normal</option><option value="normal">Normal</option><option value="high">Urgent</option><option value="high_alert">High alert</option></select>
           <select className="field" value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value as 'task' | 'daily' })}><option value="task">Task</option><option value="daily">Daily</option></select></div>
           <div className="row"><button className="btn" onClick={saveTaskForm}>Save task</button><button className="btn ghost" onClick={() => setShowTaskForm(false)}>Cancel</button></div>
         </div>
@@ -551,49 +596,36 @@ export default function Home() {
           <div className="row"><button className="btn" onClick={() => { if (!projForm.name.trim()) return; save((d) => ({ ...d, projects: [...d.projects, { id: Math.max(0, ...d.projects.map((p) => p.id)) + 1, name: projForm.name.trim(), description: projForm.description, dueDate: projForm.dueDate || null, priority: projForm.priority, color: projForm.color }] })); setShowProjectForm(false); }}>Save project</button><button className="btn ghost" onClick={() => setShowProjectForm(false)}>Cancel</button></div>
         </div>
       )}
-      {voiceOpen && (
-        <div className="glass card"><h3>Say a task</h3>
-          <div className="field" style={{ minHeight: 60 }}>{transcript || 'Tap the mic and speak…'}</div>
-          <div className="row"><button className={`mic ${listening ? 'listening' : ''}`} style={{ width: 56, height: 56 }} onClick={() => (listening ? stopListening() : startListening())}><Mic size={24} /></button>
-          <button className="btn" onClick={understandTask}>Understand my task</button><button className="btn ghost" onClick={() => { stopListening(); setVoiceOpen(false); }}>Close</button></div>
-          {draft && <div style={{ marginTop: 10 }}>
-            <input className="field" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
-            <textarea className="field" value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} />
-            <div className="row"><input className="field" type="date" value={draft.dueDate || ''} onChange={(e) => setDraft({ ...draft, dueDate: e.target.value || null })} /><input className="field" type="time" value={draft.dueTime || ''} onChange={(e) => setDraft({ ...draft, dueTime: e.target.value || null })} />
-            <select className="field" value={draft.priority} onChange={(e) => setDraft({ ...draft, priority: e.target.value as Priority })}><option value="normal">Normal</option><option value="high">High</option><option value="high_alert">High alert</option></select></div>
-            <div className="muted">Project: {projectName(draft.projectId)} · Kind: {draft.kind}</div>
-            <button className="btn" onClick={saveDraft}>Save task</button>
-          </div>}
-        </div>
-      )}
       {toast && <div className="glass toast">{toast}<div style={{ textAlign: 'right' }}><button className="btn ghost small" onClick={() => setToast(null)}>OK</button></div></div>}
       <nav className="nav">
         <button className={view === 'today' ? 'active' : ''} onClick={() => setView('today')}><HomeIcon size={22} />Home</button>
         <button className={view === 'schedule' ? 'active' : ''} onClick={() => setView('schedule')}><CalendarDays size={22} />Schedule</button>
         <button onClick={() => setUltronOpen(true)} aria-label="Ultron assistant" title="Ultron — your AI assistant" style={{ color: '#fff', display: 'flex', flexDirection: 'column', alignItems: 'center' }}><Avatar size="md" color="blue" state="idle" />Ultron</button>
         <button className={view === 'calendar' ? 'active' : ''} onClick={() => setView('calendar')}><Calendar size={22} />Calendar</button>
-        <button className={view === 'reminders' ? 'active' : ''} onClick={() => setView('reminders')}><Bell size={22} />Reminders</button>
         <button className={view === 'profile' ? 'active' : ''} onClick={() => setView('profile')}><User size={22} />Profile</button>
       </nav>
       {ultronOpen && (
-        <div className="glass card ultron-sheet" style={{ position: 'fixed', left: 12, right: 12, bottom: 86, zIndex: 50, maxHeight: '62vh', display: 'flex', flexDirection: 'column' }}>
-          <div className="row"><strong>Ultron</strong><span className="muted">Your AI assistant — warm, calm, precise. I only use your real tasks.</span><button className="btn ghost small iconbtn" style={{ marginLeft: 'auto' }} onClick={() => { stopSpeaking(); setUltronSpeaking(false); setUltronOpen(false); }}><X size={16} /> Close</button></div>
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 10 }}>
-            <Avatar size="xl" color="blue" state={ultronAvatarState} onClick={ultronMic} />
-            <div className="muted" style={{ marginTop: 8, textAlign: 'center' }}>
-              {ultronListening ? 'Listening… I am hearing you.' : ultronSpeaking ? 'Speaking…' : 'Tap Ultron to talk, or type below.'}
-            </div>
+        <div className="ultron-full">
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <strong>Ultron</strong>
+            <button className="btn ghost small iconbtn" onClick={() => { stopUltronListening(); stopSpeaking(); setUltronSpeaking(false); setUltronOpen(false); }} aria-label="Close Ultron"><X size={16} /> Close</button>
           </div>
-          <div style={{ overflowY: 'auto', flex: 1, marginTop: 8 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 16 }}>
+            <Avatar size="xl" color="blue" state={ultronAvatarState} onClick={ultronMic} />
+            <div className="muted" style={{ marginTop: 10, textAlign: 'center' }}>
+              {ultronListening ? 'Listening… tap Ultron again or Stop to finish.' : ultronSpeaking ? 'Speaking…' : 'Tap Ultron to talk, or type below.'}
+            </div>
+            {micHint && <div className="muted" style={{ marginTop: 6, textAlign: 'center' }}>{micHint}</div>}
+          </div>
+          <div className="ultron-chat">
             {ultronMsgs.map((m, i) => <div key={i} style={{ margin: '8px 0', textAlign: m.role === 'user' ? 'right' : 'left' }}><span style={{ display: 'inline-block', padding: '8px 12px', borderRadius: 14, background: m.role === 'user' ? 'var(--accent)' : 'rgba(255,255,255,.14)', color: '#fff', maxWidth: '88%' }}>{m.text}</span></div>)}
           </div>
-          <div className="row" style={{ marginTop: 8 }}>
-            <button className="btn ghost small iconbtn" onClick={ultronMic} aria-label="Speak to Ultron">{ultronListening ? 'Listening…' : <Mic size={18} />}</button>
-            <input className="field" style={{ flex: 1, margin: 0 }} value={ultronInput} onChange={(e) => setUltronInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleUltronSend(ultronInput); }} placeholder="Talk to Ultron — English, Hinglish, Hindi or Marathi…" />
-            <button className="btn small" onClick={() => handleUltronSend(ultronInput)}><Send size={16} /> Send</button>
+          <div className="ultron-inputbar">
+            <button className={`mic ${ultronListening ? 'listening' : ''}`} style={{ width: 52, height: 52, flexShrink: 0 }} onClick={ultronMic} aria-label={ultronListening ? 'Stop listening' : 'Speak to Ultron'}>{ultronListening ? <Square size={20} /> : <Mic size={22} />}</button>
+            <input className="field" style={{ flex: 1, margin: 0 }} value={ultronInput} onChange={(e) => setUltronInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleUltronSend(ultronInput); }} placeholder="Talk to Ultron…" />
+            <button className="btn ultron-send" onClick={() => handleUltronSend(ultronInput)}><Send size={16} /> Send</button>
           </div>
-          <div className="muted" style={{ marginTop: 6 }}>Try: “what's my week look like?” · “what's overdue?” · “how am I doing?” · “remind me at 2pm with a voice reminder” · “mark Wake up done”</div>
-          {data.ultronReminders.filter((r) => !r.fired).length > 0 && <div className="muted" style={{ marginTop: 6 }}>Scheduled voice reminders: {data.ultronReminders.filter((r) => !r.fired).map((r) => `“${r.title}” ${r.date} ${r.time}`).join(' · ')}</div>}
+          {ultronListening && <div style={{ textAlign: 'center', marginTop: 8 }}><button className="btn ghost small" onClick={stopUltronListening}>Stop listening</button></div>}
         </div>
       )}
     </div>
