@@ -1,0 +1,156 @@
+# Build the native Android APK and publish it as a GitHub Release.
+#
+# Trigger: every push to main, and manual dispatch from the Actions tab.
+# The APK is debug-signed (assembleDebug) for testing — no signing
+# keystore is invented or stored here. Release signing comes later.
+#
+# Flow: npm ci -> npm run build (Next.js static export -> out/)
+#   -> npx cap sync android (copy web assets into the Android project)
+#   -> Gradle assembleDebug -> upload APK as a workflow artifact
+#   -> attach the APK to the v1.0.0 GitHub Release (re-running the
+#     workflow updates that release with the newest APK).
+name: Android Release APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web app (static export to out/)
+        run: npm run build
+        env:
+          # Supabase is optional: when these GitHub secrets are set, the
+          # built app syncs to Supabase; when they are absent, the build
+          # still passes and the app falls back to localStorage only.
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+
+      - name: Sync Capacitor Android project
+        run: npx cap sync android
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform 36 and build tools
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+
+      - name: Generate Android icons from public/icon-512.png
+        # The launcher/splash PNGs are binary and are not committed to
+        # the repo; regenerate them in CI from the committed icon.
+        run: |
+          pip install --quiet pillow
+          python3 - <<'PY'
+          from PIL import Image
+          import os
+          src = Image.open("public/icon-512.png").convert("RGBA")
+          base = "android/app/src/main/res"
+          sizes = {
+              "mipmap-mdpi/ic_launcher.png": 48, "mipmap-mdpi/ic_launcher_round.png": 48,
+              "mipmap-hdpi/ic_launcher.png": 72, "mipmap-hdpi/ic_launcher_round.png": 72,
+              "mipmap-xhdpi/ic_launcher.png": 96, "mipmap-xhdpi/ic_launcher_round.png": 96,
+              "mipmap-xxhdpi/ic_launcher.png": 144, "mipmap-xxhdpi/ic_launcher_round.png": 144,
+              "mipmap-xxxhdpi/ic_launcher.png": 192, "mipmap-xxxhdpi/ic_launcher_round.png": 192,
+              "mipmap-mdpi/ic_launcher_foreground.png": 108, "mipmap-hdpi/ic_launcher_foreground.png": 162,
+              "mipmap-xhdpi/ic_launcher_foreground.png": 216, "mipmap-xxhdpi/ic_launcher_foreground.png": 324,
+              "mipmap-xxxhdpi/ic_launcher_foreground.png": 432,
+              "drawable/splash.png": 512,
+              "drawable-mdpi/splash.png": 320, "drawable-hdpi/splash.png": 480,
+              "drawable-xhdpi/splash.png": 720, "drawable-xxhdpi/splash.png": 960,
+              "drawable-xxxhdpi/splash.png": 1280,
+              "drawable-land-mdpi/splash.png": 480, "drawable-land-hdpi/splash.png": 800,
+              "drawable-land-xhdpi/splash.png": 1280, "drawable-land-xxhdpi/splash.png": 1600,
+              "drawable-land-xxxhdpi/splash.png": 1920,
+              "drawable-port-mdpi/splash.png": 320, "drawable-port-hdpi/splash.png": 480,
+              "drawable-port-xhdpi/splash.png": 720, "drawable-port-xxhdpi/splash.png": 960,
+              "drawable-port-xxxhdpi/splash.png": 1280,
+          }
+          for rel, size in sizes.items():
+              path = os.path.join(base, rel)
+              os.makedirs(os.path.dirname(path), exist_ok=True)
+              src.resize((size, size), Image.LANCZOS).save(path)
+          print("icons generated")
+          PY
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.14.3
+
+      - name: Build debug APK
+        run: gradle -p android assembleDebug --stacktrace
+
+      - name: Upload APK as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-reminder-app-debug.apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Publish GitHub Release v1.0.0 with APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: Task Reminder App v1.0.0 (Android APK)
+          files: android/app/build/outputs/apk/debug/app-debug.apk
+          body: |
+            ## Task Reminder App — Android APK (v1.0.0)
+
+            A phone-first reminder app as a real Android app: projects,
+            tasks, calendar, reminders inbox, voice capture, Listen
+            (English / Hindi / Marathi), and Ultron — the AI assistant
+            in the centre of the bottom nav, like Jarvis / Vision.
+            Tell Ultron "remind me at 2pm with a voice reminder" and
+            it schedules it for you.
+
+            ### Install on Android
+            1. Download **app-debug.apk** below onto your phone.
+            2. Tap it to install. Android will ask you to allow
+               installing from this source (unknown sources) — allow it
+               for this install only.
+            3. Open **Task Reminder**, allow Notifications when asked,
+               and set your reminder settings in Account > Settings
+               (background reminders, voice reminders, language,
+               2 hours before due — all on by default).
+
+            ### What the native app does that the PWA cannot
+            - Reminders are scheduled on your phone with Android
+              local notifications, so they fire even when the app
+              is closed.
+            - Voice reminders use your phone's free voices
+              (en-IN / hi-IN / mr-IN). The voice speaks when the
+              app opens or when you tap the notification — Android
+              does not let a WebView app speak out loud from a
+              fully closed state.
+
+            ### Note
+            This is a **debug-signed APK for testing**, built by
+            GitHub Actions from this repo. A release-signed build
+            with a proper keystore comes later.
